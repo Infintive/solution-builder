@@ -120,23 +120,15 @@ resources:
       #
       # The deploy path itself needs NO OBO scope — ALL resource deploys run as
       # the DEPLOYER SP against the target (subprocess_auth_env target_deploy
-      # branch), and metadata/embeddings LLM calls run as the APP SP. The one
-      # load-bearing OBO use is the FEVM target-workspace picker: it calls
-      # mcp-fevm through the `fevm_mcp` UC HTTP connection
-      # (POST /api/2.0/mcp/external/fevm_mcp) with the user's token. The managed
-      # external-MCP endpoint reported "required scopes: unity-catalog" on a
-      # `catalog.connections`-only token — but the Apps user_api_scopes API
-      # REJECTS the literal `unity-catalog` ("not a valid scope") and `catalog`,
-      # accepting only the granular `catalog.*` family. So we request the full
-      # granular UC set, which is the grantable superset of the connections
-      # capability. This workspace REJECTS `all-apis`/`iam.*`.
+      # branch), and metadata/embeddings LLM calls run as the APP SP. The OBO
+      # scopes below cover the agent's metadata reads (catalog/schema/table
+      # listing) during builds. The Apps user_api_scopes API REJECTS the literal
+      # `unity-catalog` ("not a valid scope") and `catalog`, accepting only the
+      # granular `catalog.*` family — so we request the full granular UC set,
+      # the grantable superset of the connections capability. This workspace
+      # REJECTS `all-apis`/`iam.*`.
       # GENERIC scopes only — the agent's OBO calls read catalog metadata during
-      # builds in EVERY tier. The two FEVM-only scopes (mcp.external +
-      # catalog.connections, needed solely to call the fevm_mcp UC connection)
-      # are NOT here — they're added by the FEVM overlays (databricks.prod-fevm.yml
-      # / tier3), so a generic (Tier 1) or scale (Tier 2) install never prompts
-      # the user to authorize "Access External MCP Server". DAB APPENDS target
-      # user_api_scopes to this base list.
+      # builds in EVERY tier. DAB APPENDS target user_api_scopes to this base list.
       user_api_scopes:
         - catalog.catalogs
         - catalog.schemas

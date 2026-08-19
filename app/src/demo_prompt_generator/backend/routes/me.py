@@ -67,7 +67,6 @@ def get_my_settings(
     if _user_target is None:  # generic build — no remote-deploy targets exist
         return UserSettingsOut(
             cross_workspace_deploy_enabled=config.cross_workspace_deploy_enabled,
-            fevm_integration_enabled=config.fevm_integration_enabled,
         )
     saved = _user_target.get_user_target(session, who.email)
     return UserSettingsOut(
@@ -77,7 +76,6 @@ def get_my_settings(
         ),
         cross_workspace_deploy_enabled=config.cross_workspace_deploy_enabled,
         default_target_workspace_host=_default_target_host(config),
-        fevm_integration_enabled=config.fevm_integration_enabled,
     )
 
 
@@ -109,7 +107,6 @@ def update_my_settings(
         ),
         cross_workspace_deploy_enabled=config.cross_workspace_deploy_enabled,
         default_target_workspace_host=_default_target_host(config),
-        fevm_integration_enabled=config.fevm_integration_enabled,
     )
 
 
@@ -126,7 +123,7 @@ def validate_my_deploy_target(
 ) -> TargetValidateResponse:
     """Validate a candidate deploy target as the deployer SP (project-independent
     — used by the home-page target control before any project exists). Three
-    tiers: reachable (== in FEVM AWS Stable / CWNP-on) → SP is workspace admin →
+    tiers: reachable (== in the SP's own account / CWNP-on) → SP is workspace admin →
     region has a provisioned catalog."""
     if _target_probe is None or not config.cross_workspace_deploy_enabled:
         raise HTTPException(

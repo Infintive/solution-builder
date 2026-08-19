@@ -268,8 +268,8 @@ The **per-user target** (chosen once on the home page) is stored in
 `user_settings.target_workspace_host` and resolved by
 `resolve_user_target(user_target, config)` → user value, else
 `DEFAULT_TARGET_WORKSPACE_HOST`, else none. Cross-workspace deploys only work
-into FEVM AWS Stable workspaces where the deployer SP is a workspace admin (the
-home-page control validates this and tells the user how to add the SP).
+into workspaces in the deployer SP's own account where the SP is a workspace
+admin (the home-page control validates this and tells the user how to add the SP).
 
 ### Ownership reconcile (cross-workspace only)
 

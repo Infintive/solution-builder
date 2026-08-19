@@ -5,10 +5,10 @@ DEPLOYER SP in three tiers — all detectable with the SP's own OAuth-M2M creds,
 no account-admin required:
 
   1. REACHABLE — can the SP authenticate to the workspace at all? An account
-     SP's token is only accepted by workspaces in its OWN account (FEVM AWS
-     Stable). Cross-account → token/OIDC failure. This is also exactly the
-     account where Cross-Workspace Network Policy (CWNP) is enabled, so
-     "reachable" ⟺ "in FEVM AWS Stable" ⟺ "cross-workspace deploy can work".
+     SP's token is only accepted by workspaces in its OWN account. Cross-account
+     → token/OIDC failure. This is also exactly the account where Cross-Workspace
+     Network Policy (CWNP) is enabled, so "reachable" ⟺ "in the SP's own account"
+     ⟺ "cross-workspace deploy can work".
   2. ADMIN — is the SP in the workspace's `admins` group? A full `bundle
      deploy` sets run_as/ownership to the user, which a non-admin SP cannot do
      (verified: 403 "Non-admins can set run_as to themselves only"). If not
@@ -38,7 +38,7 @@ class TargetUnreachable(Exception):
 
 # Status codes the UI branches on.
 STATUS_READY = "ready"                       # can_deploy
-STATUS_OUT_OF_ACCOUNT = "out_of_account"     # not FEVM AWS Stable / CWNP-off
+STATUS_OUT_OF_ACCOUNT = "out_of_account"     # outside the SP's account / CWNP-off
 STATUS_NEEDS_ADMIN = "needs_admin"           # reachable but SP not admin → prompt to bless
 STATUS_REGION_UNSUPPORTED = "region_unsupported"  # region has no catalog yet
 STATUS_REGION_UNKNOWN = "region_unknown"     # couldn't determine the region
@@ -119,8 +119,8 @@ def probe_target(
     # in another account" AND "workspace is in this account but the SP hasn't
     # been added to it yet" — the SP can't tell them apart. The common, fixable
     # cause is the latter, so treat unreachable as needs-blessing: tell the user
-    # to add the SP as a workspace admin (with the caveat that if it's not a
-    # FEVM AWS Stable workspace, that's the other possible reason).
+    # to add the SP as a workspace admin (with the caveat that if it's not in
+    # the SP's own account, that's the other possible reason).
     try:
         me = scim_me(host)
     except TargetUnreachable:
@@ -134,9 +134,9 @@ def probe_target(
             message=(
                 "The deployer service principal can't authenticate to this "
                 "workspace yet — add it as a workspace admin (see below), then "
-                "re-check. If this isn't a FEVM AWS Stable workspace, that's the "
-                "other possible reason; cross-workspace deploy only supports FEVM "
-                "AWS Stable workspaces."
+                "re-check. If this workspace isn't in the deployer SP's own "
+                "account, that's the other possible reason; cross-workspace "
+                "deploy only supports workspaces in the SP's account."
             ),
         )
 
@@ -212,7 +212,7 @@ def make_sp_scim_me(client_id: str, client_secret: str) -> Callable[[str], dict]
     """Return a `scim_me(host)` that authenticates as the deployer SP against
     `host` and returns the SCIM Me dict. Raises TargetUnreachable if the SP
     can't authenticate (cross-account / 401 / token-exchange failure) — the
-    signal that the workspace is outside FEVM AWS Stable (CWNP off)."""
+    signal that the workspace is outside the SP's own account (CWNP off)."""
     def _scim_me(host: str) -> dict:
         try:
             ws = make_sp_target_client(host, client_id, client_secret)

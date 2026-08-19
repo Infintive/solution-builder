@@ -77,7 +77,7 @@ export interface Project {
   warehouse_name: string | null;
   default_catalog: string | null;
   default_schema: string | null;
-  /** Cross-workspace deploy target (Option A): the FEVM workspace URL this
+  /** Cross-workspace deploy target (Option A): the workspace URL this
    *  project's resources deploy INTO. Null = deploy to the app's own host
    *  workspace. Only effective when the deployer SP is configured server-side. */
   target_workspace_host?: string | null;
@@ -567,7 +567,7 @@ export async function updateProject(
     description?: string;
     customer?: string;
     architecture_first?: boolean;
-    /** FEVM workspace URL to deploy this project's resources into (Option A).
+    /** Workspace URL to deploy this project's resources into (Option A).
      *  Empty string clears it (→ deploy to the app's own workspace). */
     target_workspace_host?: string;
   }
@@ -592,9 +592,6 @@ export interface UserSettings {
    *  equals the default as "shared default" instead of its raw name.
    *  (`cross_workspace_deploy_enabled` above is the deployer-SP tier gate.) */
   default_target_workspace_host?: string | null;
-  /** Tier gate: the FEVM integration is configured (FEVM connection set). False
-   *  → the FEVM picker is hidden and the control uses the paste-URL fallback. */
-  fevm_integration_enabled?: boolean;
 }
 
 /** Per-user account settings (cross-workspace deploy target — applies to ALL
@@ -649,10 +646,6 @@ export async function validateMyTarget(
   if (!resp.ok) throw new Error(`Failed to validate target: ${resp.status}`);
   return resp.json();
 }
-
-// NOTE: the FEVM client (FevmWorkspace, listMyFevmWorkspaces, provision…, etc.)
-// moved to `lib/fevm-api.ts` so the whole FEVM feature is one self-contained,
-// gate-off-able / removable module. Import FEVM calls from `@/lib/fevm-api`.
 
 /** Provision the workspace scaffolding an architecture-first project deferred at
  *  creation (LLM name/schema, warehouse discovery, CREATE SCHEMA, resources.json).

@@ -72,8 +72,8 @@ import {
   type DiscoveryIdeaInput,
 } from "@/lib/custom-api";
 // Deploy-target control (Tier-2 "scale" feature) — a portable, self-contained
-// module (hosts the FEVM picker internally when enabled). All the target/FEVM
-// state + API calls live inside it; the home page just mounts it.
+// module. All the target state + API calls live inside it; the home page just
+// mounts it.
 import { DeployTargetControl } from "@/components/remote-deploy/DeployTargetControl";
 import { FileUploadChip } from "@/components/file-upload-chip";
 import { AUTO_BUILD_KICKOFF, BRAND_NOTE } from "@/lib/auto-build-prompt";
@@ -1911,8 +1911,8 @@ function Index() {
 
                 {/* Deploy-target control (Tier-2 "scale" feature) — a
                     portable, self-contained module. Renders the collapsed
-                    one-liner + editor (FEVM picker when enabled, else
-                    paste-URL), or nothing when the feature is off. See
+                    one-liner + a paste-URL editor, or nothing when the
+                    feature is off. See
                     components/remote-deploy/DeployTargetControl. */}
                 <DeployTargetControl />
 

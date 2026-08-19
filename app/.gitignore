@@ -44,16 +44,14 @@ node_modules/
 .databricks
 .build/
 
-# per-target deploy configs. Examples are committed. The three official
-# deploy overlays (prod / staging / prod-fevm) ARE committed — they hold
-# internal deploy values (no secrets). INTERNAL-ONLY: excluded from the public
-# mirror via .publicignore. Any other databricks.*.yml (e.g. a personal
-# databricks.dev.yml) stays ignored.
+# per-target deploy configs. Examples are committed. The official deploy
+# overlays (prod / staging) hold internal deploy values (no secrets) and are
+# excluded from the public mirror via .publicignore. Any other databricks.*.yml
+# (e.g. a personal databricks.dev.yml) stays ignored.
 databricks.*.yml
 !databricks.*.yml.example
 !databricks.prod.yml
 !databricks.staging.yml
-!databricks.prod-fevm.yml
 # `prod-xws` is a personal dev/test instance name — keep it out of the repo
 # entirely (even its example). Deploy it locally; nothing xws-named is committed.
 databricks.prod-xws.yml

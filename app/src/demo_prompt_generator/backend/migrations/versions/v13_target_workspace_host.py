@@ -1,10 +1,10 @@
 """Add projects.target_workspace_host.
 
-The TARGET FEVM workspace a project's Databricks resources deploy INTO
+The TARGET workspace a project's Databricks resources deploy INTO
 (cross-workspace deploy, Option A — deployer service principal). An https
-workspace URL, e.g. https://fevm-....cloud.databricks.com. Nullable — a null
-means deploy to the app's OWN host workspace via the classic OBO path
-(unchanged behavior). See core/auth.py write_project_sp_auth_file + AUTH.md.
+workspace URL. Nullable — a null means deploy to the app's OWN host workspace
+via the classic OBO path (unchanged behavior). See core/auth.py
+write_project_sp_auth_file + AUTH.md.
 
 Revision ID: v13_target_ws_host
 Revises: v11_project_mode

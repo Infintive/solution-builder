@@ -26,16 +26,6 @@ from .routes import collab as _collab  # noqa: E402, F401  # /api/projects/{id}/
 from .routes import architecture_history as _architecture_history  # noqa: E402, F401  # /api/projects/{id}/architecture-history — arch-tab History panel
 from .routes import grounding as _grounding  # noqa: E402, F401  # /api/grounding/analyze — real-UC-schema vs story gap analysis
 
-# FEVM integration (/api/me/fevm/*) — internal, self-contained module. Imported
-# under try/except so the app boots cleanly even if the `fevm/` directory is
-# physically absent (e.g. an OSS build that excludes it). Its endpoints are also
-# runtime-gated by config.fevm_integration_enabled — when off they report
-# disabled and the UI falls back to the paste-URL target control.
-try:
-    from . import fevm as _fevm  # noqa: E402, F401  # side-effect: registers /api/me/fevm/*
-except ImportError:
-    _fevm = None  # FEVM module excluded from this build — feature simply absent.
-
 
 @router.get("/health", operation_id="health")
 async def health():

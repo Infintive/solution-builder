@@ -402,9 +402,9 @@ class Project(SQLModel, table=True):
     # provisioning resources). Drives which Build fork the agent takes.
     mode: str = SQLField(default="story", max_length=20)
 
-    # Cross-workspace deploy (Option A): the TARGET FEVM workspace this
-    # project's Databricks resources deploy INTO (an https workspace URL, e.g.
-    # https://fevm-....cloud.databricks.com). Null = deploy to the app's OWN
+    # Cross-workspace deploy (Option A): the TARGET workspace this
+    # project's Databricks resources deploy INTO (an https workspace URL).
+    # Null = deploy to the app's OWN
     # host workspace via the classic OBO path (unchanged behavior). When set
     # (and the deployer SP is configured), the agent's .databrickscfg points at
     # this host with the deployer-SP OAuth-M2M creds. See core/auth.py
@@ -1024,7 +1024,7 @@ class ProjectUpdateRequest(BaseModel):
     customer: Optional[str] = None
     # Flipped to False when the user builds the solution from the architecture.
     architecture_first: Optional[bool] = None
-    # Cross-workspace deploy target (Option A): the FEVM workspace URL this
+    # Cross-workspace deploy target (Option A): the workspace URL this
     # project's resources deploy INTO. "" or null clears it (→ deploy to the
     # app's own host workspace). Only takes effect when the deployer SP is
     # configured server-side (DEPLOYER_SP_CLIENT_ID/SECRET).
@@ -1060,11 +1060,6 @@ class TargetValidateResponse(BaseModel):
     admin_settings_url: Optional[str] = None
     admin_instructions: Optional[str] = None
 
-
-# NOTE: the FEVM-specific models (FevmWorkspace, FevmProvisionRequest, …) moved
-# to `backend/fevm/models.py` so the entire FEVM feature is one self-contained,
-# gate-off-able / strippable module. The generic cross-workspace scale-tier
-# models (TargetValidate* above) stay here — they're not FEVM-specific.
 
 
 class ProjectProvisionRequest(BaseModel):
@@ -1164,7 +1159,7 @@ class ProjectOut(BaseModel):
     default_catalog: Optional[str] = None
     default_schema: Optional[str] = None
     # Cross-workspace deploy target (Option A). Null = deploy to the app's own
-    # host workspace (classic). Set = deploy INTO this FEVM workspace as the
+    # host workspace (classic). Set = deploy INTO this workspace as the
     # deployer SP. Surfaced so the UI can show/edit the current target.
     target_workspace_host: Optional[str] = None
     # Template lineage
@@ -1643,7 +1638,7 @@ class UserSettings(SQLModel, table=True):
     __tablename__ = "user_settings"
 
     email: str = SQLField(primary_key=True, index=True, max_length=255)
-    # Cross-workspace deploy target (Option A): the FEVM AWS Stable workspace
+    # Cross-workspace deploy target (Option A): the target workspace
     # URL this user's projects deploy INTO. Null = use the app's own workspace
     # (or the server default DEFAULT_TARGET_WORKSPACE_HOST).
     target_workspace_host: Optional[str] = SQLField(default=None, max_length=255)
@@ -1667,15 +1662,13 @@ class UserSettingsOut(BaseModel):
     cross_workspace_deploy_enabled: bool = False
     # The server's shared-default target host. Lets the UI recognize when the
     # user's saved target IS the shared default and label it "shared default"
-    # (never its raw name), even before the FEVM picker is loaded.
+    # (never its raw name), even before the target control loads.
     default_target_workspace_host: Optional[str] = None
-    # Explicit feature gates (managed/internal build vs OSS build). The UI gates
-    # the ENTIRE cross-workspace target / FEVM UX on these instead of inferring
-    # from the presence of a default host — so on an OSS install (deployer SP +
-    # FEVM connection unset) the whole feature is absent, not just dormant.
-    # `cross_workspace_deploy_enabled` (declared above): deployer SP configured.
-    # `fevm_integration_enabled`: FEVM MCP connection configured (picker on).
-    fevm_integration_enabled: bool = False
+    # Explicit feature gate (managed/internal build vs OSS build). The UI gates
+    # the ENTIRE cross-workspace target UX on `cross_workspace_deploy_enabled`
+    # (declared above: deployer SP configured) instead of inferring from the
+    # presence of a default host — so on an OSS install (deployer SP unset) the
+    # whole feature is absent, not just dormant.
 
 
 class UserSettingsUpdateRequest(BaseModel):

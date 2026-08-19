@@ -9,25 +9,7 @@
 # Syntax: gitignore-style globs, repo-root-relative.
 
 # Internal deploy overlays — real workspace/Lakebase IDs, endpoint names, admin
-# emails for the official prod / staging / FEVM deployments. No secrets, but
+# emails for the official prod / staging deployments. No secrets, but
 # internal-only. The public repo ships only the *.example templates.
 app/databricks.prod.yml
 app/databricks.staging.yml
-app/databricks.prod-fevm.yml
-# The FEVM deploy TEMPLATE also names FEVM (internal) — strip it too. (Unlike
-# the other *.yml.example files, which are public.)
-app/databricks.prod-fevm.yml.example
-
-# FEVM integration module — internal-only (Solution Builder / GTM AI Tooling
-# team managed deployment). FEVM is not a public product; this is the
-# workspace-discovery + provisioning skin on top of the generic remote-deploy
-# core. The generic core (paste-URL scale tier) SHIPS to public; only this skin
-# is stripped. Now a single self-contained package (mcp.py + routes.py +
-# models.py + README.md); ../router.py imports it under try/except so removing
-# this whole directory leaves the app booting cleanly. See backend/fevm/README.md.
-app/src/demo_prompt_generator/backend/fevm/
-
-# Internal FEVM redeploy runbook + any FEVM-specific ops scripts. The GENERIC
-# per-region onboarding script (app/scripts/remote-deploy/) SHIPS to public;
-# only this FEVM-named folder is stripped.
-app/scripts/fevm/

@@ -34,7 +34,7 @@ class AppConfig(BaseSettings):
 
     # --- Cross-workspace deploy (Option A: deployer service principal) ---
     # OAuth-M2M creds for the dedicated deployer SP that deploys generated
-    # demos INTO users' target FEVM workspaces. When set (+ a project has a
+    # demos INTO users' target workspaces. When set (+ a project has a
     # target_workspace_host), the agent's .databrickscfg is written with these
     # SP creds pointed at the target host instead of the user's OBO PAT pointed
     # at the app's own workspace. Empty (default) = classic same-workspace OBO
@@ -88,31 +88,6 @@ class AppConfig(BaseSettings):
         """True iff the deployer SP is configured. Gates the whole Option-A
         path — when False, nothing changes vs. the same-workspace OBO model."""
         return bool(self.deployer_sp_client_id and self.deployer_sp_client_secret)
-
-    # --- FEVM MCP integration (list target workspaces as the signed-in user) --
-    # The app calls the mcp-fevm server through a Unity Catalog HTTP connection
-    # on its OWN workspace (POST /api/2.0/mcp/external/<name>) with the user's
-    # OBO token — the connection does the cross-account per-user OAuth. So the
-    # app needs only the connection NAME; the OAuth client/secret live on the UC
-    # connection, not here. Empty name (default) disables the FEVM picker and
-    # nothing changes vs. the paste-a-URL flow. Set via env in
-    # databricks.<target>.yml. See fevm/mcp.py.
-    fevm_connection_name: str = Field(
-        default="", validation_alias="FEVM_CONNECTION_NAME"
-    )
-
-    # FEVM app base URL — used ONLY to build a human "view this deployment in
-    # FEVM" deep link (`{url}/my-resources/deployment/?id=<resource_id>`) so a
-    # user can watch a provisioning workspace's progress in FEVM. Empty = no
-    # link shown. Set via env in databricks.<target>.yml.
-    fevm_app_url: str = Field(default="", validation_alias="FEVM_APP_URL")
-
-    @property
-    def fevm_integration_enabled(self) -> bool:
-        """True iff the FEVM MCP connection is configured. Gates the
-        list-FEVM-workspaces picker; when False the UI falls back to the
-        paste-a-URL target control unchanged."""
-        return bool(self.fevm_connection_name)
 
     # Endpoint name passed as Anthropic `model` field by Claude Code
     # (Agent SDK). For FMAPI default endpoints this is the
