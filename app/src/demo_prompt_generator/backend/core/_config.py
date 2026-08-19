@@ -32,6 +32,63 @@ class AppConfig(BaseSettings):
     databricks_host: str = Field(default="")
     databricks_token: str = Field(default="")
 
+    # --- Cross-workspace deploy (Option A: deployer service principal) ---
+    # OAuth-M2M creds for the dedicated deployer SP that deploys generated
+    # demos INTO users' target workspaces. When set (+ a project has a
+    # target_workspace_host), the agent's .databrickscfg is written with these
+    # SP creds pointed at the target host instead of the user's OBO PAT pointed
+    # at the app's own workspace. Empty (default) = classic same-workspace OBO
+    # behavior is fully preserved. Set via env in databricks.<target>.yml's
+    # app_env. The secret should come from an app secret / secret scope, not an
+    # inline value, in any real deployment.
+    deployer_sp_client_id: str = Field(
+        default="", validation_alias="DEPLOYER_SP_CLIENT_ID"
+    )
+    deployer_sp_client_secret: str = Field(
+        default="", validation_alias="DEPLOYER_SP_CLIENT_SECRET"
+    )
+
+    # Default target workspace host pre-filled in the UI's "deploy target"
+    # field for new projects. The user can overwrite it with any workspace the
+    # deployer SP can reach + is admin on. Empty (default) = no pre-fill (blank
+    # field = deploy to the app's own workspace, classic behavior). Set via env
+    # in databricks.<target>.yml.
+    default_target_workspace_host: str = Field(
+        default="", validation_alias="DEFAULT_TARGET_WORKSPACE_HOST"
+    )
+
+    # Per-region catalog-name overrides for cross-workspace deploy, as a JSON
+    # object {"<region>": "<catalog>"}. Every onboarded region defaults to the
+    # `solution_builder` catalog; an entry here renames it for a region where
+    # that name is already taken. Deployment-specific data — set ONLY in the
+    # gitignored overlay, never committed. Empty (default) = generic default
+    # everywhere. Parsed by `target_catalog_overrides`.
+    target_catalog_overrides_json: str = Field(
+        default="", validation_alias="TARGET_CATALOG_OVERRIDES"
+    )
+
+    @property
+    def target_catalog_overrides(self) -> dict[str, str]:
+        """Parsed {region: catalog} override map (empty if unset/invalid)."""
+        raw = (self.target_catalog_overrides_json or "").strip()
+        if not raw:
+            return {}
+        import json
+
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {str(k): str(v) for k, v in parsed.items()}
+
+    @property
+    def cross_workspace_deploy_enabled(self) -> bool:
+        """True iff the deployer SP is configured. Gates the whole Option-A
+        path — when False, nothing changes vs. the same-workspace OBO model."""
+        return bool(self.deployer_sp_client_id and self.deployer_sp_client_secret)
+
     # Endpoint name passed as Anthropic `model` field by Claude Code
     # (Agent SDK). For FMAPI default endpoints this is the
     # workspace-shipped Anthropic-shape model name (e.g.

@@ -41,7 +41,7 @@ fi
 # ============================================================================
 # Databricks Agent Skills (DAS) — the per-resource skill repo the build stage uses.
 # (Formerly ai-dev-kit; migrated to github.com/databricks/databricks-agent-skills.)
-DAS_BRANCH="${DAS_BRANCH:-${AI_DEV_KIT_BRANCH:-main}}"
+DAS_BRANCH="${DAS_BRANCH:-${DATABRICKS_AGENT_SKILL_BRANCH:-main}}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -73,35 +73,35 @@ export VITE_PORT="${FRONTEND_PORT}"
 
 # ============================================================================
 # Clone the Databricks Agent Skills repo (pure skills - no Python packages).
-# Cloned into ./ai_dev_kit/ (dir name kept for path stability); skills live under
+# Cloned into ./databricks_agent_skill/ (dir name kept for path stability); skills live under
 # skills/ + experimental/databricks-genie. skills_manager reads from there.
 # ============================================================================
 DAS_REPO="https://github.com/databricks/databricks-agent-skills.git"
 
-if [ ! -d "ai_dev_kit" ]; then
+if [ ! -d "databricks_agent_skill" ]; then
     echo -e "${CYAN}Cloning databricks-agent-skills (branch: $DAS_BRANCH)...${NC}"
-    git clone --branch "$DAS_BRANCH" "$DAS_REPO" ai_dev_kit
+    git clone --branch "$DAS_BRANCH" "$DAS_REPO" databricks_agent_skill
     echo -e "${GREEN}databricks-agent-skills cloned successfully${NC}"
-elif [ ! -d "ai_dev_kit/skills" ]; then
+elif [ ! -d "databricks_agent_skill/skills" ]; then
     # Incomplete or wrong structure (e.g. an old ai-dev-kit clone) - re-clone.
-    echo -e "${YELLOW}ai_dev_kit folder has wrong structure, re-cloning...${NC}"
-    rm -rf ai_dev_kit
-    git clone --branch "$DAS_BRANCH" "$DAS_REPO" ai_dev_kit
+    echo -e "${YELLOW}databricks_agent_skill folder has wrong structure, re-cloning...${NC}"
+    rm -rf databricks_agent_skill
+    git clone --branch "$DAS_BRANCH" "$DAS_REPO" databricks_agent_skill
     echo -e "${GREEN}databricks-agent-skills cloned successfully${NC}"
 else
     # Make sure the remote is the DAS repo (heals a stale ai-dev-kit clone),
     # then switch/update to the requested branch.
-    CURRENT_REMOTE=$(cd ai_dev_kit && git remote get-url origin 2>/dev/null)
+    CURRENT_REMOTE=$(cd databricks_agent_skill && git remote get-url origin 2>/dev/null)
     if [ "$CURRENT_REMOTE" != "$DAS_REPO" ]; then
-        echo -e "${YELLOW}ai_dev_kit points at a different remote — re-cloning databricks-agent-skills...${NC}"
-        rm -rf ai_dev_kit
-        git clone --branch "$DAS_BRANCH" "$DAS_REPO" ai_dev_kit
+        echo -e "${YELLOW}databricks_agent_skill points at a different remote — re-cloning databricks-agent-skills...${NC}"
+        rm -rf databricks_agent_skill
+        git clone --branch "$DAS_BRANCH" "$DAS_REPO" databricks_agent_skill
         echo -e "${GREEN}databricks-agent-skills cloned successfully${NC}"
     else
-        CURRENT_BRANCH=$(cd ai_dev_kit && git branch --show-current)
+        CURRENT_BRANCH=$(cd databricks_agent_skill && git branch --show-current)
         if [ "$CURRENT_BRANCH" != "$DAS_BRANCH" ]; then
             echo -e "${YELLOW}Switching databricks-agent-skills to branch: $DAS_BRANCH (full reset)${NC}"
-            (cd ai_dev_kit && \
+            (cd databricks_agent_skill && \
                 git fetch origin && \
                 git checkout "$DAS_BRANCH" && \
                 git reset --hard "origin/$DAS_BRANCH" && \
@@ -109,7 +109,7 @@ else
             echo -e "${GREEN}databricks-agent-skills switched and reset${NC}"
         else
             echo -e "${CYAN}Updating databricks-agent-skills (branch: $DAS_BRANCH)...${NC}"
-            (cd ai_dev_kit && \
+            (cd databricks_agent_skill && \
                 git fetch origin && \
                 git reset --hard "origin/$DAS_BRANCH" && \
                 git clean -fdx) && \
@@ -118,7 +118,7 @@ else
     fi
 fi
 
-# Sync Python environment (removes stale packages if ai_dev_kit changed)
+# Sync Python environment (removes stale packages if databricks_agent_skill changed)
 echo -e "${CYAN}Syncing Python environment...${NC}"
 uv sync --quiet
 

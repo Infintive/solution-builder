@@ -208,6 +208,79 @@ gh auth login
 
 Once published, all users will see the update notification in the app's Configuration panel.
 
+## Auth & deployment modes
+
+Solution Builder deploys a demo's Databricks resources (catalog objects,
+pipelines, dashboards, Genie, apps, …) using one of **three** identity/target
+combinations. Which one is active is decided per request from **how the app is
+running** (local vs. deployed) and **how it's configured** — it is *not* a
+manual switch. All three are additive: with nothing extra configured you get
+the classic single-workspace behavior.
+
+### The three modes
+
+| Mode | Runs where | Deploys **as** | Deploys **into** | Selected when |
+|------|-----------|----------------|------------------|---------------|
+| **Local** | your laptop (`./scripts/dev.sh`) | your Databricks **CLI profile** (PAT/OAuth in `~/.databrickscfg`) | that profile's workspace | No Apps proxy header present (`detect_mode → "local"`) |
+| **OBO / single-workspace** | deployed as a Databricks App | the **logged-in user** (OBO — the proxy's `x-forwarded-access-token`) | the app's **own** host workspace | Deployed, and **no** deployer SP / no target set |
+| **SP / cross-workspace** | deployed as a Databricks App | the **deployer service principal** (OAuth-M2M) | a **remote target** workspace (per-user setting, else the server default) | Deployed, deployer SP configured, **and** an effective target is set |
+
+`detect_mode(headers)` returns `"deployed"` when the Apps proxy injected a user
+token, else `"local"`. Within deployed mode, `target_deploy_active(config, target)`
+= `cross_workspace_deploy_enabled AND <effective target>` decides OBO vs. SP.
+`write_project_databrickscfg(...)` then writes the project's `.databrickscfg`
+with the right identity and returns a label (`"obo"` | `"sp-target"`), so the
+agent's CLI deploys under it. See `backend/core/auth.py`.
+
+```
+                         detect_mode(headers)
+                        /                     \
+                   "local"                 "deployed"
+                      |                         |
+              CLI profile,            target_deploy_active(config, target)?
+           profile's workspace         /                          \
+                                     no                            yes
+                                      |                             |
+                          OBO: user PAT →              SP-target: deployer SP →
+                          app's own workspace          remote target workspace
+                          (single-workspace)           (cross-workspace) → reconcile
+                                                        hands ownership back to the user
+```
+
+### Configuration options
+
+Set in the deploy target's `app_env` (`databricks.<target>.yml`) → become
+container env vars; or in `.env` for local dev.
+
+| Env var | Purpose | Effect when unset |
+|---------|---------|-------------------|
+| `DEPLOYER_SP_CLIENT_ID` | Deployer SP application (client) ID. | Cross-workspace **off** — OBO single-workspace only. |
+| `DEPLOYER_SP_CLIENT_SECRET` | Deployer SP OAuth-M2M secret. **Keep in a gitignored overlay / secret scope, never commit.** | Cross-workspace **off**. |
+| `DEFAULT_TARGET_WORKSPACE_HOST` | Shared default target workspace for users who haven't picked their own (an `https://…` workspace URL). | No default — a user with no override deploys to the app's own workspace. |
+| `DEFAULT_CATALOG` | Catalog new projects land in. | App-level default. |
+
+`cross_workspace_deploy_enabled` is a derived flag: **true iff both**
+`DEPLOYER_SP_CLIENT_ID` **and** `DEPLOYER_SP_CLIENT_SECRET` are set. That single
+flag gates the entire SP/cross-workspace path — leave the two SP vars empty and
+the app is byte-for-byte the OBO single-workspace app.
+
+The **per-user target** (chosen once on the home page) is stored in
+`user_settings.target_workspace_host` and resolved by
+`resolve_user_target(user_target, config)` → user value, else
+`DEFAULT_TARGET_WORKSPACE_HOST`, else none. Cross-workspace deploys only work
+into workspaces in the deployer SP's own account where the SP is a workspace
+admin (the home-page control validates this and tells the user how to add the SP).
+
+### Ownership reconcile (cross-workspace only)
+
+In SP mode the deployer SP creates everything, so it owns everything. A
+deterministic backend **reconcile** (`backend/core/_ownership_reconcile.py`)
+then hands each resource to the triggering user — `OWNER` on UC objects,
+`IS_OWNER`/`CAN_MANAGE` elsewhere; the catalog stays SP-owned. It's idempotent,
+hash-gated (skips when nothing changed), and rides the `getDeployedResources`
+endpoint (fires on build-complete and self-heals on project open). No-op in
+local and OBO modes (resources are already the user's).
+
 ## Deployment (Databricks Apps)
 
 Set `var.lakebase_instance` to point at an existing Lakebase instance the

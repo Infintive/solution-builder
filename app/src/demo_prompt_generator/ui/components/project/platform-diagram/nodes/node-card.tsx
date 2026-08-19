@@ -8,7 +8,7 @@
  *   • data sources                           — brand icon, caption position.
  * Both use a FIXED box (baseSize or a user resize) — changing the label never
  * resizes the tile. (Logo annotations render via RotatableCard directly, NOT
- * through NodeCard; their add-time sizing uses `logoFitSize` in canvas.tsx.)
+ * through NodeCard; their icon+caption footprint comes from `logoFootprint`.)
  *
  * Composites (lakeflow / governance / agent-bricks / …) and the text/box/image
  * annotation variants are NOT built on this — they have their own layouts.

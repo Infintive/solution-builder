@@ -44,7 +44,7 @@ export function nearestSide(r: Rect, px: number, py: number): Side {
  *  middle. 1→0.5; 2→0.43/0.57; 3→0.36/0.5/0.64; clamped to stay on the side. */
 export function spreadFrac(index: number, count: number): number {
   if (count <= 1) return 0.5;
-  const gap = 0.14; // spacing between adjacent lines, as a fraction of the side
+  const gap = 0.18; // spacing between adjacent lines, as a fraction of the side
   const f = 0.5 + (index - (count - 1) / 2) * gap;
   return Math.min(0.92, Math.max(0.08, f));
 }

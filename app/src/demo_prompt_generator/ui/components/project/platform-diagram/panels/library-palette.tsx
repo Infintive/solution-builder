@@ -13,6 +13,7 @@ import {
   Square,
   Shapes,
   Image as ImageIcon,
+  StickyNote,
   Search,
   Check,
 } from "lucide-react";
@@ -189,6 +190,7 @@ export const LibraryPalette = memo(function LibraryPalette({
         {!picking && (() => {
           const annos = ([
             { v: "text" as const, icon: <Type className="h-4 w-4" />, label: "Text" },
+            { v: "note" as const, icon: <StickyNote className="h-4 w-4" />, label: "Note" },
             { v: "box" as const, icon: <Square className="h-4 w-4" />, label: "Box" },
             { v: "logo" as const, icon: <Shapes className="h-4 w-4" />, label: "Logo" },
             { v: "image" as const, icon: <ImageIcon className="h-4 w-4" />, label: "Image" },

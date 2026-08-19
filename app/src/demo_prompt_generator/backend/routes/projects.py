@@ -17,12 +17,21 @@ from fastapi import BackgroundTasks, HTTPException, Request
 from sqlmodel import func, select, text
 
 from ..core import Dependencies, create_router
+# Cross-workspace deploy targets live in the OPTIONAL remote_deploy/ module.
+# Tolerant import so a generic build (module excluded) still boots; project
+# creation then uses the app's own default_catalog and same-workspace deploy.
+try:
+    from ..remote_deploy import user_target as _user_target
+except ImportError:
+    _user_target = None
 from ..core._config import logger
 from ..core.auth import is_admin
 from ..services.llm_service import LLMService, ModelSize
 from ..models import (
     DescriptionAiEditRequest,
     DescriptionAiEditResponse,
+    DiscoveryAnalysis,
+    DiscoveryIdea,
     LinkAccessRequest,
     LinkAccessResult,
     Message,
@@ -107,7 +116,7 @@ def _batch_load_resources_text(session, project_ids: list[str]) -> dict[str, str
         except Exception:
             pass
     return out
-from .resources import list_clusters, list_warehouses
+from .resources import list_clusters, pick_query_warehouse
 
 router = create_router()
 
@@ -119,19 +128,15 @@ DEFAULT_SCHEMA_PREFIX = "demo_"
 
 
 def _find_shared_warehouse(ws) -> tuple[str | None, str | None]:
-    """Find a warehouse with 'shared' in the name (uses cached list).
+    """Resolve a warehouse to run schema-provisioning queries on.
+
+    Delegates to `pick_query_warehouse` (running-shared → any-running →
+    shared-stopped → any warehouse; serverless first), so a workspace with no
+    'shared'-named warehouse still resolves one instead of returning None.
 
     Returns (warehouse_id, warehouse_name) tuple.
     """
-    try:
-        warehouses = list_warehouses(ws)
-        for w in warehouses:
-            if "shared" in w.name.lower():
-                logger.info(f"Found shared warehouse: {w.name} ({w.id})")
-                return w.id, w.name
-    except Exception as e:
-        logger.warning(f"Failed to find shared warehouse: {e}")
-    return None, None
+    return pick_query_warehouse(ws)
 
 
 def _find_shared_cluster(ws) -> tuple[str | None, str | None]:
@@ -240,6 +245,168 @@ def _quick_arch_name(description: str) -> str:
         cut = name[:60]
         name = (cut.rsplit(" ", 1)[0] if " " in cut else cut) + "…"
     return name or "Architecture draft"
+
+
+def _build_source_tables_md(
+    ws: WorkspaceClient, full_names: list[str], allow_data_write: bool = False
+) -> str:
+    """Render the selected real UC tables as `specifications/source-tables.md` —
+    the durable record of the REAL tables the demo is built on, READ-ONLY.
+
+    `allow_data_write` records the user's opt-in: when False the demo may create
+    NO tables (pure read-only analytics); when True it may create AUXILIARY tables
+    in the demo's OWN catalog — but the real tables below stay read-only either way.
+
+    Emits SCHEMA ONLY (control-plane `ws.tables.get()` metadata — column names,
+    types, nullability, comments). It does NOT profile the tables (distinct
+    counts, ranges, top values, sample rows): the build agent gathers that itself,
+    read-only, off a live warehouse (see the skill's
+    `references/grounding-table-stats.md`), so profiling isn't duplicated
+    server-side and stays fresh at build time. Never fatal — a table we can't read
+    is noted inline and the create proceeds.
+    """
+    # Shared cap on how many real tables a grounded demo builds on — the same
+    # bound the home-page picker/scan use, so the user's selection and this
+    # durable record agree. (Imported name only; no server-side profiling here.)
+    from ..services.table_stats import MAX_TABLES
+
+    capped = full_names[:MAX_TABLES]
+
+    lines: list[str] = [
+        "# Source tables (real Unity Catalog tables — build on these READ-ONLY)",
+        "",
+        "> The user picked the real tables below to build this demo on. Build the",
+        "> demo **DIRECTLY on these exact tables, READ-ONLY** — point every component",
+        "> (dashboards, Genie space, metric views, any ML) at these fully-qualified",
+        "> `catalog.schema.table` names and query them **in place**.",
+        "> **Do NOT generate synthetic data. Do NOT copy or re-create these tables in",
+        "> another catalog/schema. NEVER write to or modify them.** The demo uses the",
+        "> user's real data as it is. Build only what read-only queries support; do",
+        "> not assume columns that aren't listed.",
+        "",
+        "> Below is each table's **schema** (columns, types, comments). Before you",
+        "> design the build, **profile the tables yourself** with read-only queries",
+        "> on a SQL warehouse — distinct counts, null %, ranges, and top categorical",
+        "> values — then derive the data's capability signals (time columns, numeric",
+        "> measures, low-cardinality dimensions, cross-table join keys). See the",
+        "> skill's `references/grounding-table-stats.md` for exactly what to gather,",
+        "> the queries to run, and how to turn it into a use-case fit read.",
+        "",
+        (
+            "> **Data-write opt-in: ENABLED.** You MAY create AUXILIARY tables in the "
+            "demo's OWN catalog/schema (label them demo-created) so write-needing "
+            "capabilities work. The real tables above still stay strictly read-only."
+            if allow_data_write
+            else "> **Data-write opt-in: OFF.** Create NO tables at all — this is a "
+            "pure read-only analytics demo (dashboards, Genie, metric views, read-only "
+            "AI functions) over the real tables above."
+        ),
+        "",
+    ]
+    if len(full_names) > MAX_TABLES:
+        lines += [
+            f"> _(Selection capped at {MAX_TABLES} tables; "
+            f"{len(full_names) - MAX_TABLES} more were omitted.)_",
+            "",
+        ]
+
+    # Schema only — control-plane metadata, no warehouse queries. The build agent
+    # profiles the live tables itself (see the header pointer + the skill's
+    # references/grounding-table-stats.md) rather than inheriting a server-computed
+    # snapshot.
+    for full_name in capped:
+        lines.append(f"## `{full_name}`")
+        try:
+            info = ws.tables.get(full_name=full_name)
+        except Exception as e:  # noqa: BLE001 — surface, don't fail the create
+            logger.warning("could not read metadata for %s: %s", full_name, e)
+            lines += [
+                "",
+                f"_Could not read metadata: {e}. The app's service principal may "
+                "lack USE + SELECT on this table._",
+                "",
+            ]
+            continue
+        if info.comment:
+            lines += ["", f"{info.comment}"]
+        lines += [
+            "",
+            "| Column | Type | Nullable | Comment |",
+            "| --- | --- | --- | --- |",
+        ]
+        for c in info.columns or []:
+            col = c.name or ""
+            typ = c.type_text or (c.type_name.value if c.type_name is not None else "")
+            nullable = "" if c.nullable is None else ("yes" if c.nullable else "no")
+            comment = (c.comment or "").replace("\n", " ").replace("|", "\\|")
+            lines.append(f"| `{col}` | {typ} | {nullable} | {comment} |")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def _discovery_idea_lines(idea: DiscoveryIdea, *, heading: str) -> list[str]:
+    """Render one discovery idea (chosen or alternative) as markdown lines."""
+    out = [f"### {heading}: {idea.title}"]
+    if idea.fit and (idea.fit.tier or "").strip():
+        reason = f" — {idea.fit.reason.strip()}" if (idea.fit.reason or "").strip() else ""
+        out.append(f"- **Data fit:** {idea.fit.tier.strip()}{reason}")
+    if (idea.hook or "").strip():
+        out += ["", idea.hook.strip()]
+    if (idea.why or "").strip():
+        out += ["", f"**Why it's valuable:** {idea.why.strip()}"]
+    out.append("")
+    return out
+
+
+def _build_data_discovery_md(discovery: DiscoveryAnalysis) -> str:
+    """Render the discovery step's analysis as `specifications/data-discovery.md`
+    — the durable record of what the LLM learned while the user explored their
+    real tables (the chosen use-case + its data-fit rationale, the alternatives
+    it set aside, and the capability reasoning).
+
+    The build agent reads this FIRST alongside source-tables.md so it inherits
+    the analysis instead of re-deriving it (and it survives context compaction).
+    Treated as AGREED scope: the use-case is already decided — build it, don't
+    re-pitch it or contradict the fit findings.
+    """
+    lines: list[str] = [
+        "# Data discovery — what we learned exploring the real tables",
+        "",
+        "> This is the analysis from the **data-discovery** step, when the user",
+        "> explored their real Unity Catalog tables and picked a use case. Treat it",
+        "> as **AGREED SCOPE** — the use case below is already decided. Build THAT",
+        "> use case on the real tables (see `specifications/source-tables.md` for the",
+        "> schema + data capability signals); do NOT re-pitch it, swap it for another",
+        "> idea, or contradict the data-fit findings. Read this together with",
+        "> `source-tables.md` before designing the story.",
+        "",
+    ]
+
+    if discovery.chosen is not None:
+        lines += ["## The use case to build", ""]
+        lines += _discovery_idea_lines(discovery.chosen, heading="Chosen")
+
+    if (discovery.reasoning or "").strip():
+        lines += [
+            "## How the tables flow through the solution",
+            "",
+            discovery.reasoning.strip(),
+            "",
+        ]
+
+    if discovery.alternatives:
+        lines += [
+            "## Alternatives considered (NOT chosen — do not re-explore)",
+            "",
+            "> The discovery step also surfaced these; the user did not pick them.",
+            "> They're recorded so you don't spend effort re-proposing them.",
+            "",
+        ]
+        for alt in discovery.alternatives:
+            lines += _discovery_idea_lines(alt, heading="Alternative")
+
+    return "\n".join(lines) + "\n"
 
 
 def _resolve_unique_schema_name(
@@ -699,6 +866,42 @@ def get_home_projects(session: Dependencies.Session, headers: Dependencies.Heade
     )
 
 
+# Capabilities that require WRITING data (generating/ingesting tables, an app's
+# write-back store, training runs). A grounded "use existing data" demo is
+# read-only by default, so these are dropped from the seed unless the user opted
+# into letting the demo create its own auxiliary data (allow_data_write).
+_GROUNDED_WRITE_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "synthetic-data-gen",
+        "sdp",
+        "lakeflow-connect",
+        "zerobus-ingest",
+        "delta-sharing",
+        "marketplace",
+        "databricks-apps",
+        "lakebase",
+        "ml-training-serving",
+    }
+)
+
+
+def _resolve_capabilities(
+    capabilities: list[str] | None,
+    grounding_tables: list[str],
+    allow_data_write: bool,
+) -> list[str]:
+    """Drop write-needing capabilities for a read-only grounded demo.
+
+    No-op unless the project is grounded on real tables (`grounding_tables`
+    non-empty) AND the user did not opt into data-write. The user's real tables
+    are read-only regardless; this only shapes which resources the demo builds.
+    """
+    caps = capabilities or []
+    if grounding_tables and not allow_data_write:
+        caps = [c for c in caps if c not in _GROUNDED_WRITE_CAPABILITIES]
+    return caps
+
+
 @router.post(
     "/projects",
     response_model=ProjectOut,
@@ -724,10 +927,17 @@ def create_project(
     # of serializing them; the handler is a sync `def`, so the pool is safe.
     project_id = generate_uuid()
 
+    # Read-only grounded demos build on the user's real tables; drop write-needing
+    # capabilities (data-gen, ingest, app, lakebase, ML training) unless the user
+    # opted into data-write. Used for BOTH the app-spec scaffold and resources.json.
+    resolved_capabilities = _resolve_capabilities(
+        body.capabilities, body.grounding_tables, body.allow_data_write
+    )
+
     with ThreadPoolExecutor(max_workers=3) as ex:
         # Independent of everything except project_id — start it immediately.
         dir_future = ex.submit(
-            create_project_directory, project_id, capabilities=body.capabilities
+            create_project_directory, project_id, capabilities=resolved_capabilities
         )
 
         # Resolve the resource NAMES (schema, warehouse) for BOTH flows — they go
@@ -779,6 +989,14 @@ def create_project(
         # into it below. Re-raise any error from the thread.
         dir_future.result()
 
+    # Catalog: when the user has a cross-workspace deploy target set (a per-USER
+    # account setting), new projects land in that target's `solution_builder`
+    # catalog (cached on UserSettings at save time), NOT the app's own catalog.
+    project_catalog = (
+        (_user_target.get_user_catalog(session, user_email) if _user_target is not None else None)
+        or config.default_catalog
+    )
+
     # Create DB record with default resources (cluster left empty - user sets it manually)
     project = Project(
         id=project_id,
@@ -790,7 +1008,7 @@ def create_project(
         warehouse_name=warehouse_name,
         cluster_id=None,
         cluster_name=None,
-        default_catalog=config.default_catalog,
+        default_catalog=project_catalog,
         default_schema=default_schema,
         architecture_first=body.architecture_first,
         mode=body.mode,
@@ -845,7 +1063,7 @@ def create_project(
     # to a resource that doesn't exist yet.
     project_dir = get_project_directory(project.id)
     (project_dir / "resources.json").write_text(
-        json.dumps(build_initial_resources_json(body.capabilities or []), indent=2),
+        json.dumps(build_initial_resources_json(resolved_capabilities), indent=2),
         encoding="utf-8",
     )
 
@@ -928,6 +1146,64 @@ def create_project(
         context_dir.mkdir(exist_ok=True)
         (context_dir / "source-document.md").write_text(body.context_document, encoding="utf-8")
 
+    # Durable verbatim copy of the user's raw brief. When the user pastes a
+    # long, well-thought-out specification into the home-page box, that text
+    # is the highest-fidelity statement of intent we will ever get — but so
+    # far it lived ONLY as a chat Message. Across the Stage 1→2→3 flow (and
+    # any context compaction) it drops out of the agent's window while the
+    # agent's own compressed README persists on disk, so the agent re-grounds
+    # on its summary and detail is lost. Writing the brief to a file the skill
+    # is told to treat as authoritative keeps intake lossless: the spec stays
+    # on disk, re-readable at every stage. Only persist a SUBSTANTIAL brief —
+    # a one-line topic ("retail returns demo") adds nothing and would just be
+    # noise next to the README. Threshold is deliberately low (a couple of
+    # sentences) so anything resembling a real spec is captured.
+    brief = (body.source_brief or "").strip()
+    if len(brief) >= 280:
+        project_dir = get_project_directory(project.id)
+        context_dir = project_dir / "context"
+        context_dir.mkdir(exist_ok=True)
+        (context_dir / "source-brief.md").write_text(
+            "# User's original brief (verbatim — authoritative source of intent)\n\n"
+            "> This is exactly what the user provided, captured unaltered. Treat it\n"
+            "> as the source of truth for the demo's intent. Preserve its specifics\n"
+            "> (names, numbers, entities, requirements, phrasing) end-to-end; do not\n"
+            "> dilute them into a shorter summary.\n\n"
+            f"{brief}\n",
+            encoding="utf-8",
+        )
+
+    # "Use existing data": the user picked REAL Unity Catalog tables to build the
+    # demo on, READ-ONLY. Read their schema (+ a few sample rows) via the app
+    # service principal and write specifications/source-tables.md, the durable source of
+    # truth the build agent uses to derive a use case and point every component
+    # DIRECTLY at these real tables (no synthetic data, no copies — never written
+    # to or modified). The thread pool above has joined, so serial use of `ws` here
+    # is safe. Best-effort: a read failure is noted inline in the file, never fatal.
+    if body.grounding_tables:
+        project_dir = get_project_directory(project.id)
+        specs_dir = project_dir / "specifications"
+        specs_dir.mkdir(exist_ok=True)
+        (specs_dir / "source-tables.md").write_text(
+            _build_source_tables_md(ws, body.grounding_tables, body.allow_data_write),
+            encoding="utf-8",
+        )
+
+        # Carry the discovery step's ANALYSIS into the project so the build agent
+        # inherits what the LLM already learned (the chosen use-case + its
+        # data-fit rationale, the alternatives, the capability reasoning) instead
+        # of re-deriving it. Durable across context compaction; the skill reads it
+        # as agreed scope. Only written when the client sent a discovery payload.
+        if body.discovery is not None and (
+            body.discovery.chosen is not None
+            or body.discovery.alternatives
+            or (body.discovery.reasoning or "").strip()
+        ):
+            (specs_dir / "data-discovery.md").write_text(
+                _build_data_discovery_md(body.discovery),
+                encoding="utf-8",
+            )
+
     # Sync files to database so they appear in the file list
     file_sync: FileSyncService = request.app.state.file_sync
     file_sync.full_sync_project(project.id, session=session)
@@ -974,6 +1250,7 @@ def create_project(
         warehouse_name=project.warehouse_name,
         default_catalog=project.default_catalog,
         default_schema=project.default_schema,
+        target_workspace_host=project.target_workspace_host,
         source_template_id=project.source_template_id,
         source_template_name=_resolve_template_name(session, project.source_template_id),
     )
@@ -1104,6 +1381,7 @@ def get_project(
         warehouse_name=project.warehouse_name,
         default_catalog=project.default_catalog,
         default_schema=project.default_schema,
+        target_workspace_host=project.target_workspace_host,
         source_template_id=project.source_template_id,
         source_template_name=_resolve_template_name(session, project.source_template_id),
         my_role=my_role,
@@ -1136,6 +1414,9 @@ def update_project(
         project.customer = body.customer.strip() or None
     if body.architecture_first is not None:
         project.architecture_first = body.architecture_first
+    # NOTE: the cross-workspace deploy target is a per-USER account setting
+    # (PUT /api/me/settings), not per-project — it applies to all the user's
+    # projects. `body.target_workspace_host` is intentionally ignored here.
 
     project.updated_at = datetime.now(timezone.utc)
     session.add(project)
@@ -1175,6 +1456,7 @@ def update_project(
         warehouse_name=project.warehouse_name,
         default_catalog=project.default_catalog,
         default_schema=project.default_schema,
+        target_workspace_host=project.target_workspace_host,
         source_template_id=project.source_template_id,
         source_template_name=_resolve_template_name(session, project.source_template_id),
     )
@@ -1284,6 +1566,7 @@ async def set_project_brand(
         warehouse_name=project.warehouse_name,
         default_catalog=project.default_catalog,
         default_schema=project.default_schema,
+        target_workspace_host=project.target_workspace_host,
         source_template_id=project.source_template_id,
         source_template_name=_resolve_template_name(session, project.source_template_id),
     )
@@ -1423,6 +1706,7 @@ def provision_architecture_project(
         warehouse_name=project.warehouse_name,
         default_catalog=project.default_catalog,
         default_schema=project.default_schema,
+        target_workspace_host=project.target_workspace_host,
         source_template_id=project.source_template_id,
         source_template_name=_resolve_template_name(session, project.source_template_id),
     )
@@ -1575,6 +1859,7 @@ def generate_project_narrative(
         warehouse_name=project.warehouse_name,
         default_catalog=project.default_catalog,
         default_schema=project.default_schema,
+        target_workspace_host=project.target_workspace_host,
         source_template_id=project.source_template_id,
         source_template_name=_resolve_template_name(session, project.source_template_id),
     )
@@ -1648,9 +1933,14 @@ def update_project_resources(
         warehouse_name=project.warehouse_name,
         default_catalog=project.default_catalog,
         default_schema=project.default_schema,
+        target_workspace_host=project.target_workspace_host,
         source_template_id=project.source_template_id,
         source_template_name=_resolve_template_name(session, project.source_template_id),
     )
+
+
+# NOTE: target validation moved to the account level — POST /api/me/validate-target
+# (routes/me.py) — since the deploy target is a per-USER setting, not per-project.
 
 
 @router.delete(
@@ -2141,16 +2431,38 @@ async def take_over_project(
             if previous == user_email:
                 return
             claim_driver(session, project_id, user_email)
-            # Deployed mode: point <project>/.databrickscfg at the new driver's PAT.
-            from ..core.auth import detect_mode, request_user_pat, resolve_host, write_project_auth_file
+            # Deployed mode: point <project>/.databrickscfg at the new driver.
+            # Cross-workspace (SP-target) or classic OBO, decided centrally.
+            from ..core.auth import (
+                detect_mode, request_user_pat, resolve_host, write_project_databrickscfg,
+            )
             if detect_mode(headers) == "deployed":
                 pat = request_user_pat(headers)
                 host = resolve_host(headers)
-                if pat and host:
-                    try:
-                        write_project_auth_file(get_project_directory(project_id), host, pat)
-                    except Exception:
-                        logger.exception("take-over: failed to refresh .databrickscfg for %s", project_id)
+                # Take-over swaps the DRIVER IDENTITY (PAT) only — the project's
+                # deploy TARGET is pinned and must NOT change. Read the project's
+                # pinned host, never the new driver's per-user setting (which could
+                # point at a different workspace and split the project's resources).
+                effective_target = (
+                    _user_target.resolve_project_target(
+                        project=project,
+                        user_email=user_email,
+                        session=session,
+                        config=config,
+                    )
+                    if _user_target is not None
+                    else None
+                )
+                try:
+                    write_project_databrickscfg(
+                        get_project_directory(project_id),
+                        config=config,
+                        target_workspace_host=effective_target,
+                        user_pat=pat,
+                        user_host=host,
+                    )
+                except Exception:
+                    logger.exception("take-over: failed to refresh .databrickscfg for %s", project_id)
             # Record the handoff in the conversation so it's visible + auditable
             # (the UI pill) AND mark it pending so the NEXT agent turn folds a
             # one-line notice into Claude's query — exactly once, no duplicate.
@@ -2195,6 +2507,7 @@ async def take_over_project(
         warehouse_name=project.warehouse_name,
         default_catalog=project.default_catalog,
         default_schema=project.default_schema,
+        target_workspace_host=project.target_workspace_host,
         source_template_id=project.source_template_id,
         source_template_name=_resolve_template_name(session, project.source_template_id),
         my_role=my_role,

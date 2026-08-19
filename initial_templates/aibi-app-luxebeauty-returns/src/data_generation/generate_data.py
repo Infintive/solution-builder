@@ -37,6 +37,14 @@ PDFs for the Knowledge Assistant are produced by the separate
 Aligned with `references/example-luxebeauty/specifications/01-lakeflow.md`.
 """
 
+# SQL safety: when a SQL statement needs a runtime TEXT value (a column/table
+# COMMENT, a WHEN/WHERE literal, an inserted string), pass it as a bound
+# PARAMETER — spark.sql("... IS :txt", args={"txt": val}) — never f-string it
+# into a '...' literal. Spark quotes/escapes the value, so an apostrophe
+# ("O'Brien", "customer's") is safe with no manual '' escaping. Identifiers
+# (catalog/schema/table/column) are structure, not values — they stay in the
+# f-string (backtick-quote them).
+
 from __future__ import annotations
 
 import os
@@ -127,7 +135,7 @@ print(f"SPIKE_PEAK:   {SPIKE_PEAK.date()}")
 try:
     spark  # noqa: F821
 except NameError:
-    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    spark = DatabricksSession.builder.profile(os.environ.get("DATABRICKS_CONFIG_PROFILE", "DEFAULT")).serverless(True).getOrCreate()
 
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
 # Raw parquet lands in a UC Volume — the bronze landing zone the SDP silver

@@ -44,7 +44,7 @@
         "row": 1,
         "label": "Postgres",
         "icon": "file:vendor/postgresql",
-        "note": "A data source = `type:\"source\"` (NOT a catalog component): a demo-authored tile with a vendor/generic `icon` + a `label`/`desc` you set. The library palette's built-in source presets already carry clean labels (Postgres \u00b7 Sensor data \u00b7 PDF documents), so adding one from the palette shows the clean name \u2014 keep the explicit `label` when hand-authoring."
+        "ai_reasoning": "A data source = `type:\"source\"` (NOT a catalog component): a demo-authored tile with a vendor/generic `icon` + a `label`/`desc` you set. The library palette's built-in source presets already carry clean labels (Postgres \u00b7 Sensor data \u00b7 PDF documents), so adding one from the palette shows the clean name \u2014 keep the explicit `label` when hand-authoring."
       },
       {
         "id": "src-sensors",
@@ -67,7 +67,7 @@
         "type": "uc-model-registry",
         "col": "ml",
         "row": 0,
-        "note": "rowGrid layout \u2014 `row` aligns across ALL columns into shared horizontal bands. This tab uses rows 0 \u00b7 2 \u00b7 3 \u00b7 4 (row 1 is deliberately SKIPPED to open a blank band of vertical space between this top ML row and the batch/training row below, so the 'Register model' / 'Load model' / 'Feedback loop' labels there stay readable). Registry + Model Serving are the top band (row 0)."
+        "ai_reasoning": "rowGrid layout \u2014 `row` aligns across ALL columns into shared horizontal bands. This tab uses rows 0 \u00b7 2 \u00b7 3 \u00b7 4 (row 1 is deliberately SKIPPED to open a blank band of vertical space between this top ML row and the batch/training row below, so the 'Register model' / 'Load model' / 'Feedback loop' labels there stay readable). Registry + Model Serving are the top band (row 0)."
       },
       {
         "id": "model-serving",
@@ -80,7 +80,7 @@
         "type": "lakeflow-jobs",
         "col": "pipeline",
         "row": 2,
-        "note": "This is the generic `lakeflow-jobs` (orchestration/Jobs) tile RELABELED as a batch scoring job \u2014 there is no dedicated batch-scoring type. For any other scheduled job, reuse `lakeflow-jobs` + a `label`/`desc`.",
+        "ai_reasoning": "This is the generic `lakeflow-jobs` (orchestration/Jobs) tile RELABELED as a batch scoring job \u2014 there is no dedicated batch-scoring type. For any other scheduled job, reuse `lakeflow-jobs` + a `label`/`desc`.",
         "label": "Batch Scoring Job",
         "desc": "Scheduled bulk inference \u2014 loads the registered model and writes predictions back to a gold table."
       },
@@ -104,7 +104,7 @@
         "params": {
           "feature_store": true
         },
-        "note": "`params.feature_store: true` adds the Feature Store fork off GOLD inside the block AND exposes the `@out-fs` output handle (the `@out-gold` handle is always present). Add `metric_views: true` for a Metric Views fork + `@out-mv`. Edges target these handles: `@out-fs` (features), `@out-gold` (gold), `@l` (ingest in)."
+        "ai_reasoning": "`params.feature_store: true` adds the Feature Store fork off GOLD inside the block AND exposes the `@out-fs` output handle (the `@out-gold` handle is always present). Add `metric_views: true` for a Metric Views fork + `@out-mv`. Edges target these handles: `@out-fs` (features), `@out-gold` (gold), `@l` (ingest in)."
       },
       {
         "id": "lakebase",
@@ -145,7 +145,8 @@
           "lakebase",
           "ai-gateway",
           "vector-search",
-          "model-serving#2"
+          "model-serving#2",
+          "governance-block"
         ],
         "pad": 40,
         "z": -2
@@ -157,9 +158,24 @@
           "at": "top-left",
           "to": "platform-box"
         }
+      },
+      {
+        "id": "governance-block",
+        "type": "governance-block",
+        "below": "medallion-table",
+        "gap": 40,
+        "params": { "ai_gateway": false, "genie_ontology": false },
+        "desc": "Unity Catalog governs access, lineage and quality across every table.",
+        "ai_reasoning": "ACCESS-CONTROL only (ai_gateway + genie_ontology off) — this tab already shows a standalone `ai-gateway` tile, so don't repeat the gateway on the bar. Placed BELOW the medallion (the data it governs) and wrapped in the platform box so it reads as part of the governed platform. Governance edges auto-render dashed + arrow-ended."
       }
     ],
     "edges": [
+      {
+        "id": "e-gov-acl",
+        "from": "governance-block@acl",
+        "to": "medallion-table@b",
+        "label": "Secure access"
+      },
       {
         "id": "e-pg-med",
         "from": "src-postgres@r",

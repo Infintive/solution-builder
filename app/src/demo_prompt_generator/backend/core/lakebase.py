@@ -441,12 +441,75 @@ def initialize_models(engine: Engine) -> None:
         with engine.connect() as migration_conn:
             command.upgrade(_get_alembic_config(migration_conn), "head")
             logger.info("Alembic migrations completed successfully")
+
+        # Defense-in-depth: `upgrade head` is a NO-OP when alembic_version
+        # already claims head — even if some of those revisions' DDL never
+        # physically applied (the multi-head-lineage skip that took prod down
+        # after the Model-3 cutover). So AFTER migrating, verify the live schema
+        # actually matches what the ORM expects, and heal/scream if it doesn't.
+        _reconcile_schema_drift(engine)
     finally:
         with engine.connect() as lock_conn:
             lock_conn.execute(text(f"SELECT pg_advisory_unlock({_MIGRATION_LOCK_ID})"))
             lock_conn.commit()
 
     logger.info("Database models initialized successfully")
+
+
+def _reconcile_schema_drift(engine: Engine) -> None:
+    """Post-migration safety net: detect ORM↔DB schema drift and self-heal the
+    part we safely can.
+
+    Delegates to `schema_guard.heal_schema_drift`, which CREATEs absent tables
+    and ADD-COLUMNs absent NULLABLE columns (both additive — never drops/alters;
+    existing rows get NULL). That's the exact shape of the additive migrations
+    the incident skipped, so drift now typically FULLY self-heals. A missing
+    NOT-NULL column can't be synthesized safely (needs the owning migration's
+    default/backfill), so it's logged as MANUAL ACTION REQUIRED — the loud signal
+    that was silently absent during the prod outage. Best-effort: anything
+    failing here must never block boot (migrations already succeeded), so this
+    only ever logs."""
+    try:
+        from .schema_guard import detect_schema_drift, heal_schema_drift
+
+        drift = detect_schema_drift(engine)
+        if drift.is_empty():
+            return
+
+        logger.error(
+            "SCHEMA DRIFT after migrations — alembic reports head but the live "
+            "schema is missing objects the ORM needs: %s. This is the "
+            "multi-head-lineage skip class of bug; investigate the migration "
+            "chain.", drift.summary(),
+        )
+
+        healed = heal_schema_drift(engine, drift)
+        if healed.created_tables:
+            logger.warning(
+                "Auto-created %d missing table(s): %s",
+                len(healed.created_tables), ", ".join(sorted(healed.created_tables)),
+            )
+        if healed.added_columns:
+            logger.warning(
+                "Auto-added %d missing NULLABLE column(s): %s",
+                len(healed.added_columns),
+                ", ".join(f"{t}.{c}" for t, c in sorted(healed.added_columns)),
+            )
+        if healed.unhealed_columns:
+            # NOT-NULL columns can't be added blind — surface for manual DDL
+            # (as we did in the incident) rather than the app 500-ing every query.
+            logger.error(
+                "MANUAL ACTION REQUIRED — missing NOT-NULL column(s) cannot be "
+                "auto-added (the owning migration defines the default/backfill): "
+                "%s. Apply the corresponding migration DDL against the database.",
+                ", ".join(f"{t}.{c}" for t, c in sorted(healed.unhealed_columns)),
+            )
+        if healed.errors:
+            logger.error("Schema-drift heal hit errors: %s", "; ".join(healed.errors))
+        elif healed.fully_healed():
+            logger.warning("Schema drift fully self-healed (additive create/add-column).")
+    except Exception as e:  # noqa: BLE001 — never block boot on the safety net
+        logger.warning("Schema-drift reconcile skipped (non-fatal): %r", e)
 
 
 # ---------------------------------------------------------------------------

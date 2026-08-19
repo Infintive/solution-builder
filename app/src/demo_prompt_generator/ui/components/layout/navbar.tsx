@@ -1,4 +1,5 @@
 import { ModeToggle } from "@/components/layout/mode-toggle";
+import { sageEmbedActive } from "@/lib/sage-embed";
 import { UserMenu } from "@/components/layout/user-menu";
 import Logo from "@/components/layout/logo";
 import { Link, useMatchRoute, useNavigate } from "@tanstack/react-router";
@@ -113,7 +114,7 @@ export function Navbar({ leftContent, rightContent, hideNav }: NavbarProps) {
           >
             <HelpCircle className="h-4 w-4" />
           </Button>
-          <ModeToggle />
+          {!sageEmbedActive() && <ModeToggle />}
           <UserMenu />
         </div>
       </div>

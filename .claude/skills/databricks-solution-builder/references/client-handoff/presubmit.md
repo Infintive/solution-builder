@@ -20,7 +20,7 @@ Each defect caught here saves ~5 minutes of bundle deploy + job run + failure di
 ## Inputs
 
 - `HANDOFF_DIR` — absolute path to the unzipped handoff (the dir containing `databricks.yml`).
-- (Optional) `CLIENT_PROFILE` — Databricks CLI profile for the client/FEVM workspace, used by Check 8.
+- (Optional) `CLIENT_PROFILE` — Databricks CLI profile for the client workspace, used by Check 8.
 
 ## Auto-fix checks
 
@@ -119,7 +119,7 @@ v1.1 packages must not contain v1 setup-target artifacts. Fail if any of:
 - `README.md` references `bundle deploy --target setup` or `bundle run skill_setup`.
 - `README.md` is missing the v1.1 CLI snippet (`workspace import-dir .assistant/skills`).
 
-Background: DAB v1.1.0 doesn't support `${resources.jobs.<key>}` self-reference, so the v1 `setup` target inherited all bundle resources and failed at terraform apply on placeholder catalog/warehouse values (observed on FEVM 2026-06-02). v1.1 installs via a 3-line CLI snippet pasted into the web terminal. The skill carrier at `.assistant/skills/<slug>-adaptation/` still ships in v1.1 — only the setup-target machinery is gone. No auto-fix — re-run `client-handoff.md` Step 6 and Step 8.
+Background: DAB v1.1.0 doesn't support `${resources.jobs.<key>}` self-reference, so the v1 `setup` target inherited all bundle resources and failed at terraform apply on placeholder catalog/warehouse values (observed 2026-06-02). v1.1 installs via a 3-line CLI snippet pasted into the web terminal. The skill carrier at `.assistant/skills/<slug>-adaptation/` still ships in v1.1 — only the setup-target machinery is gone. No auto-fix — re-run `client-handoff.md` Step 6 and Step 8.
 
 ### Check 10 — ADAPTATION_FACTS present, schema-valid, version-consistent (DETECT)
 

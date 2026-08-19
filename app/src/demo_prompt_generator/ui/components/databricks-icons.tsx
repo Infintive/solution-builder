@@ -468,6 +468,32 @@ export function LakebaseBrandIcon(props: IconProps) {
   );
 }
 
+// LakeWatch — the "watch/eye" mark: a dark-red circle overlapping a coral
+// triangle (play/aperture), white lens where they meet. Agentic SIEM.
+export function LakeWatchBrandIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path d="M18 9.6c0-1.5 1.7-2.4 3-1.6l19.9 12.4a2.9 2.9 0 0 1 0 4.9L21 39.9c-1.3.8-3-.1-3-1.6V9.6Z" fill="#FF5F46"/>
+      <circle cx="18" cy="24" r="13.4" fill="#B0281C"/>
+      <path d="M18 10.7a13.4 13.4 0 0 1 0 26.6 13.4 13.4 0 0 0 0-26.6Z" fill="#fff"/>
+      <path d="M18 10.7v26.6A13.4 13.4 0 0 0 30 24 13.4 13.4 0 0 0 18 10.7Z" fill="#fff"/>
+    </svg>
+  );
+}
+
+// CustomerLake (Agentic CDP) — four coral/peach shapes forming a customer/
+// profile motif (from the official icon-customerlake.svg).
+export function CustomerLakeBrandIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <circle cx="34.2089" cy="17.4162" r="5.41622" transform="rotate(-180 34.2089 17.4162)" fill="#FF5F46"/>
+      <path d="M22.4031 37.0312L5.99999 37.0312L6 27.3746C6 22.845 9.67197 19.173 14.2016 19.173C18.7312 19.173 22.4031 22.845 22.4031 27.3746L22.4031 37.0312Z" fill="#FF5F46"/>
+      <circle cx="14.2016" cy="11.4162" r="5.41622" fill="#FABFBA"/>
+      <path d="M25.5938 25.4062L42.8241 25.4063L42.8241 33.3848C42.8241 38.1429 38.967 42 34.2089 42C29.4509 42 25.5937 38.1428 25.5937 33.3848L25.5938 25.4062Z" fill="#FABFBA"/>
+    </svg>
+  );
+}
+
 // AI Gateway — coral/peach brand mark (gateway arch + radiating nodes).
 export function AIGatewayBrandIcon(props: IconProps) {
   return (
@@ -859,6 +885,8 @@ export const DATABRICKS_ICONS = {
   unityCatalogBrand: UnityCatalogBrandIcon,
   lakehouseBrand: LakehouseBrandIcon,
   lakebaseBrand: LakebaseBrandIcon,
+  lakeWatchBrand: LakeWatchBrandIcon,
+  customerLakeBrand: CustomerLakeBrandIcon,
   aiGatewayBrand: AIGatewayBrandIcon,
   genieCodeBrand: GenieCodeBrandIcon,
   databricksAppsBrand: DatabricksAppsBrandIcon,
@@ -898,6 +926,8 @@ export const BRAND_ICONS = new Set<DatabricksIconName>([
   "unityCatalogBrand",
   "lakehouseBrand",
   "lakebaseBrand",
+  "lakeWatchBrand",
+  "customerLakeBrand",
   "lakeflowConnectBrand",
   "lakeflowJobsBrand",
   "sdpBrand",

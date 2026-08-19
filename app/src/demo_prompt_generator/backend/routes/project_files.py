@@ -27,12 +27,28 @@ from ..core.auth import (
     request_user_pat,
     resolve_host,
     write_project_auth_file,
+    write_project_databrickscfg,
 )
+# Cross-workspace ("scale") deploy — probe, per-project target, ownership
+# reconcile — lives in the OPTIONAL remote_deploy/ module. Tolerant imports so a
+# generic build (module excluded) still boots; the deploy + resource-link paths
+# then stay same-workspace and skip the ownership reconcile.
+try:
+    from ..remote_deploy import (
+        user_target as _user_target,
+        probe as _target_probe,
+        ownership_reconcile as _ownership_reconcile,
+    )
+except ImportError:
+    _user_target = None
+    _target_probe = None
+    _ownership_reconcile = None
 from ..models import (
     ArchitectureSnapshotResult,
     ArchitectureSnapshotWrite,
     DeployedResourceLink,
     DeployedResourcesOut,
+    Project,
     ProjectFile,
     ProjectFileContent,
     ProjectFileOut,
@@ -650,7 +666,14 @@ def _get_user_email(headers) -> str:
     return "anonymous@local"
 
 
-def _ensure_project_databrickscfg(project_dir: Path, headers, can_write: bool) -> bool:
+def _ensure_project_databrickscfg(
+    project_dir: Path,
+    headers,
+    can_write: bool,
+    *,
+    config=None,
+    target_workspace_host: str | None = None,
+) -> bool:
     """Refresh `<project_dir>/.databrickscfg` from the current request's
     PAT. Deployed mode only — no-op locally. Returns True iff it actually wrote
     the file (so the caller can stamp the driver token-freshness clock).
@@ -678,14 +701,20 @@ def _ensure_project_databrickscfg(project_dir: Path, headers, can_write: bool) -
     if pat is None:
         return False
     host = resolve_host(headers)
-    if not host:
-        logger.warning(
-            "deployed mode + PAT present but no host resolvable — "
-            "skipping .databrickscfg write for project_dir %s", project_dir,
-        )
-        return False
     try:
-        write_project_auth_file(project_dir, host, pat)
+        wrote = write_project_databrickscfg(
+            project_dir,
+            config=config,
+            target_workspace_host=target_workspace_host,
+            user_pat=pat,
+            user_host=host,
+        )
+        if wrote is None:
+            logger.warning(
+                "deployed mode + PAT present but nothing written (no resolvable "
+                "host / missing target creds) for project_dir %s", project_dir,
+            )
+            return False
         return True
     except Exception:
         logger.exception(
@@ -745,7 +774,40 @@ def list_project_files(
         # a non-driver editor (would thrash the token the current driver's run
         # depends on and swap the CLI identity). Driver / owner-first only.
         can_refresh = access != ACCESS_VIEWER and is_driver(session, project_id, user_email)
-        wrote = _ensure_project_databrickscfg(project_dir, headers, can_write=can_refresh)
+        # Deploy target: resolve with the shared helper so this .databrickscfg
+        # writer, the resource-tile resolver, and the deploy path always agree —
+        # and so a later account-setting change can never repoint a project that's
+        # already built. PIN on open ONLY for a driver of an already-BUILT project
+        # (freezes a legacy pre-Model-3 project to its app-own host, where its
+        # resources live). A brand-new empty draft is NOT pinned here — it stays
+        # changeable via the home-page selector until its FIRST build (the deploy
+        # path pins it then). Viewers/non-drivers never pin.
+        _has_built = (
+            _user_target.project_has_built_resources(
+                request.app.state.file_sync, project_id, session=session
+            )
+            if _user_target is not None
+            else False
+        )
+        effective_target = (
+            _user_target.resolve_and_pin_project_target(
+                project=_project,
+                user_email=user_email,
+                session=session,
+                config=config,
+                has_built_resources=_has_built,
+                can_pin=(can_refresh and _has_built),
+            )
+            if _user_target is not None
+            else None
+        )
+        wrote = _ensure_project_databrickscfg(
+            project_dir,
+            headers,
+            can_write=can_refresh,
+            config=config,
+            target_workspace_host=effective_target,
+        )
         if wrote:
             # The driver just refreshed their token on this project open → stamp
             # the freshness clock so non-drivers know the token is current.
@@ -876,15 +938,21 @@ def get_project_file(
         file_mtime = file_record.last_modified
         mark("db_fallback_decode")
 
-    # Redact secrets. `.databrickscfg` keeps everything except the token
-    # line; the other two are wholesale-redacted because the entire body
-    # is sensitive (see backend/AUTH.md, backend/core/fmapi_auth.py).
+    # Redact secrets. `.databrickscfg` keeps its non-secret keys (host, client_id)
+    # so the file is still recognizable, but blanks any SECRET-bearing line: `token`
+    # (OBO/PAT mode) AND `client_secret` (the deployer-SP OAuth secret in the
+    # cross-workspace remote-deploy path — see remote_deploy/auth.py). Both are
+    # written per-project; without this the SP client_secret was visible in the
+    # in-app file viewer. Case-insensitive key match; the other two files below are
+    # wholesale-redacted (entire body sensitive). See backend/AUTH.md,
+    # backend/core/fmapi_auth.py.
+    _SECRET_CFG_KEYS = ("token", "client_secret", "password")
     basename = Path(file_path).name
     if basename == ".databrickscfg" or basename.startswith(".databrickscfg."):
         redacted_lines: list[str] = []
         for line in content.splitlines():
-            stripped = line.strip()
-            if stripped.lower().startswith("token") and "=" in stripped:
+            key = line.split("=", 1)[0].strip().lower() if "=" in line else ""
+            if key in _SECRET_CFG_KEYS:
                 redacted_lines.append(
                     line.split("=", 1)[0] + "= [REDACTED — see backend/AUTH.md]"
                 )
@@ -964,6 +1032,15 @@ def save_project_file(
         stat = disk_path.stat()
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Write failed: {e}")
+
+    # Record a versioned architecture-history snapshot (5-min debounced). Best-
+    # effort — a history failure must never block the save.
+    if basename == "architecture.md":
+        try:
+            from ..services.architecture_history import record_architecture_history
+            record_architecture_history(session, project_id, body.content)
+        except Exception:
+            logger.warning("architecture-history snapshot failed (save route)", exc_info=True)
 
     # Live collab: record this content as the room's known hash so the resulting
     # file-watcher event is recognized as the writer's OWN save (echo) and not
@@ -1334,6 +1411,119 @@ def _build_deployed_links(
     return links
 
 
+def _maybe_reconcile_ownership(
+    *,
+    session,
+    project,
+    project_id: str,
+    user_email: str,
+    sp_ws,
+    raw_text: str,
+    extracted: dict,
+    config,
+) -> None:
+    """Run the cross-workspace ownership reconcile if — and only if — it's
+    needed. Two guards make this safe to call on EVERY deployed-resources fetch
+    (which fires on open, on each resources.json write during a build, on
+    build-complete, and on manual refresh):
+
+      1. Never mid-build. While a build is running the SP is still creating
+         tables inside the schema; transferring the schema to the user now
+         would strip the SP's USE_SCHEMA and break the build. `active_execution_id`
+         is set for the duration of an agent turn and cleared on completion, so
+         we skip while it's set and run on the post-completion fetch.
+      2. Hash gate. Skip when the resource set (keyed to the target user) is
+         unchanged since the last successful reconcile — zero API calls.
+
+    Best-effort: any failure is logged and swallowed; the hash is only stored on
+    a fully-clean pass, so a partial failure self-heals on the next open.
+    """
+    if _ownership_reconcile is None or _user_target is None:
+        return  # generic build — no cross-workspace deploy, nothing to reconcile
+    recon = _ownership_reconcile
+
+    if project is None:
+        return
+
+    # Guard 0: only the DEPLOY DRIVER reconciles. Resources landed in the
+    # driver's per-user target workspace (that's the `effective_target`
+    # resolved for the acting user here), so ownership must go to the driver —
+    # never to a viewer/editor who merely opened a shared project (which would
+    # both grant the wrong person AND point at the wrong workspace). The driver
+    # is sticky and set whenever a cross-workspace deploy ran; fall back to the
+    # owner when no one has driven yet.
+    driver = project.active_driver_email or project.user_email
+    if user_email != driver:
+        logger.debug("[reconcile] skip %s: %s is not the driver (%s)", project_id, user_email, driver)
+        return
+
+    # MID-BUILD vs BUILD-COMPLETE. During a build (active_execution_id set) we
+    # run a GRANT-ONLY pass so a user who clicks a resource tile mid-build can
+    # actually see it — WITHOUT transferring the schema (which would strip the
+    # SP's USE_SCHEMA and break the in-flight build). The full ownership
+    # transfer + SP write-back runs at build-complete when the flag clears.
+    grant_only = bool(getattr(project, "active_execution_id", None))
+
+    manifest = recon.parse_manifest(raw_text)
+    if manifest is None:
+        # Unparseable/empty manifest → nothing to do, and DON'T mark the hash
+        # (so a later, valid manifest still triggers a reconcile).
+        return
+
+    # Guard 2: hash gate. Two independent latches so the mid-build grant pass
+    # and the build-complete transfer don't shadow each other.
+    want = recon.reconcile_hash(manifest, user_email)
+    hash_field = "ownership_granted_hash" if grant_only else "ownership_reconciled_hash"
+    if want == getattr(project, hash_field, None):
+        return
+
+    # Resolve the catalog the deploy used (frozen on the project at creation),
+    # then the schema (manifest is authoritative for where things landed).
+    catalog = (
+        getattr(project, "default_catalog", None)
+        or _user_target.get_user_catalog(session, user_email)
+        or config.default_catalog
+    )
+
+    # Discover a warehouse in the TARGET for the UC ALTERs. Prefer the one the
+    # agent recorded (lives in the target); avoid the app-scoped shared cache.
+    warehouse_id = extracted.get("warehouse_id") or None
+    if not warehouse_id:
+        try:
+            for w in sp_ws.warehouses.list():
+                if getattr(w, "id", None) and getattr(w, "name", None) and "shared" in w.name.lower():
+                    warehouse_id = w.id
+                    break
+        except Exception:  # noqa: BLE001
+            logger.warning("[reconcile] could not list target warehouses", exc_info=True)
+
+    result = recon.reconcile_ownership(
+        sp_ws=sp_ws,
+        warehouse_id=warehouse_id,
+        user_email=user_email,
+        manifest=manifest,
+        catalog=catalog,
+        schema=None,  # taken from the manifest inside reconcile_ownership
+        sp_client_id=config.deployer_sp_client_id or None,
+        grant_only=grant_only,
+    )
+
+    logger.info(
+        "[reconcile] project=%s user=%s mode=%s planned=%d ok=%d failed=%d",
+        project_id, user_email, "grant-only" if grant_only else "transfer",
+        result.actions_planned, result.succeeded, result.failed,
+    )
+
+    # Only remember success if EVERY action landed — a partial pass must
+    # re-run next open (self-heal) rather than latch a stale "done". The
+    # mid-build grant pass latches a SEPARATE field, so the build-complete
+    # transfer still runs afterward (its own hash is unset).
+    if result.ran and result.failed == 0:
+        setattr(project, hash_field, want)
+        session.add(project)
+        session.commit()
+
+
 @router.get(
     "/projects/{project_id}/deployed-resources",
     response_model=DeployedResourcesOut,
@@ -1387,22 +1577,81 @@ def get_deployed_resources(
         return DeployedResourcesOut(extraction_error="resources.json is not valid UTF-8")
     resources, extraction_error = extract_resources(project_id, raw_text, ws, config)
 
-    # Get workspace host + numeric ID. workspace_id powers the Apps v2
-    # `?o=<id>` query param (the page redirects to a login screen without
-    # it). Best-effort: if the SDK call fails, app links work but omit
-    # the param.
+    # Get workspace host + numeric ID for the resource links. workspace_id
+    # powers the Apps v2 `?o=<id>` query param (the page redirects to a login
+    # screen without it). Best-effort: if the SDK call fails, app links work
+    # but omit the param.
+    #
+    # CROSS-WORKSPACE: resources deploy into the project's PINNED TARGET
+    # workspace, not the app's own workspace. So the links (and the reconcile's
+    # sp_ws below) must point at the TARGET host/id, not `ws` (the app client).
+    # Use the PROJECT's pinned target — NOT the acting user's live setting — so a
+    # viewer (who has no target set) or a user who later changed their setting
+    # still gets correct target-host links instead of the app-workspace fallback.
+    link_ws = ws
+    try:
+        # LEGACY GUARD: this endpoint already loaded resources.json into `raw_text`;
+        # if it carries real created resources and the project has no pinned
+        # target, it's a pre-Model-3 project whose resources live on the app's own
+        # workspace — resolve there, not the user's live remote pick, so the
+        # resource links point at the right host.
+        _has_built = _user_target.project_has_built_resources(
+            file_sync, project_id, session=session
+        )
+        effective_target = (
+            _user_target.resolve_and_pin_project_target(
+                project=project,
+                user_email=user_email,
+                session=session,
+                config=config,
+                has_built_resources=_has_built,
+                # Freeze on first driver view of a BUILT project so tiles +
+                # .databrickscfg + deploy stay in lockstep for its lifecycle.
+                # Never pin an empty draft here (stays changeable until build);
+                # never a viewer (must not pin someone else's project).
+                can_pin=(_has_built and is_driver(session, project_id, user_email)),
+            )
+            if _user_target is not None
+            else None
+        )
+        if effective_target and config.cross_workspace_deploy_enabled and _target_probe is not None:
+            link_ws = _target_probe.make_sp_target_client(
+                effective_target,
+                config.deployer_sp_client_id,
+                config.deployer_sp_client_secret,
+            )
+    except Exception:
+        logger.warning("Could not build target client for resource links; using app workspace")
+        link_ws = ws
+
+    # Cross-workspace ownership reconcile (Gate 1 = build-complete, Gate 2 =
+    # self-heal on open — both ride this endpoint). Give the acting user
+    # ownership/CAN_MANAGE of the resources the deployer SP created in the
+    # target. Only when we actually built a target SP client (link_ws is not
+    # ws) — never re-home the app's own workspace. Best-effort + hash-gated so
+    # steady-state opens cost one comparison and this never breaks the 200.
+    if link_ws is not ws:
+        try:
+            _maybe_reconcile_ownership(
+                session=session, project=project, project_id=project_id,
+                user_email=user_email, sp_ws=link_ws, raw_text=raw_text,
+                extracted=resources, config=config,
+            )
+        except Exception:
+            logger.warning("[reconcile] ownership reconcile hook failed", exc_info=True)
+
     host = None
     workspace_id: int | str | None = None
     try:
-        host = str(ws.config.host).rstrip("/") if ws.config.host else None
+        host = str(link_ws.config.host).rstrip("/") if link_ws.config.host else None
     except Exception:
         logger.warning("Could not resolve workspace host for resource URLs")
     try:
-        workspace_id = ws.get_workspace_id()
+        workspace_id = link_ws.get_workspace_id()
     except Exception:
         logger.warning("Could not resolve workspace_id; app links will omit ?o=")
 
-    links = _build_deployed_links(resources, host, workspace_id, ws=ws)
+    links = _build_deployed_links(resources, host, workspace_id, ws=link_ws)
 
     # Get deployment timestamp from the file record (check both paths)
     deployed_at = None

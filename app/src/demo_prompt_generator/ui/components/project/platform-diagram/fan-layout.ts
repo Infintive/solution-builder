@@ -175,6 +175,10 @@ export function computeFanLayout(edges: FanEdge[], nodeLookup: NodeLookup): Map<
     n <= 1 ? base : Math.min(0.95, Math.max(0.05, base + (i - (n - 1) / 2) * 0.06));
 
   const out = new Map<string, FanEntry>();
+  // Vertical elbow of each horizontal-run edge: its effective x + Y-extent (+
+  // source-anchor Y and target direction), used by the de-overlap pass after the
+  // main loop.
+  const vertSpans = new Map<string, { y0: number; y1: number; effX: number; sy: number; toTarget: number; hasCenter: boolean }>();
   for (const e of edges) {
     const sR = rect(e.source);
     const tR = rect(e.target);
@@ -191,16 +195,64 @@ export function computeFanLayout(edges: FanEdge[], nodeLookup: NodeLookup): Map<
     const tEndSide = tPort?.side ?? ts;
     const tFrac = tPort ? portFan(tPort.frac, tg.i < 0 ? 0 : tg.i, tg.n) : spreadFrac(tg.i < 0 ? 0 : tg.i, tg.n);
     let centerX: number | undefined;
-    if (tg.n > 1 && (tEndSide === "l" || tEndSide === "r")) {
-      const midX = (sCtr.x + tCtr.x) / 2;
-      const STEP = 22;
-      const anchorY = sidePoint(tR, tEndSide, tFrac).y;
+    // The source side (as resolved for this edge) — needed to bound the corridor
+    // the vertical elbow lives in.
+    const sEndSide = sPort?.side ?? ss;
+    if (
+      tg.n > 1 &&
+      (tEndSide === "l" || tEndSide === "r") &&
+      (sEndSide === "l" || sEndSide === "r")
+    ) {
+      // Rank against the connector's FIXED center Y (same reference for every
+      // sibling) — NOT this edge's own fanned anchor, which varies per edge and
+      // would make two symmetric sources rank identically and collide.
+      const connectorY = tPort ? sidePoint(tR, tPort.side, tPort.frac).y : tCtr.y;
       const sibs = sortedGroups.get(tPort ? `${e.target}|${e.targetHandle}` : `${e.target}|${ts}`) ?? [];
-      const above = sCtr.y < anchorY;
-      const sameSide = sibs.filter((x) => (above ? x.key < anchorY : x.key >= anchorY));
-      const pos = sameSide.findIndex((x) => x.id === e.id);
-      const mag = sameSide.length - pos;
-      centerX = midX + (above ? 1 : -1) * mag * STEP;
+      // NESTING RULE — edges from stacked sources converging on ONE target
+      // connector must nest like concentric brackets so their vertical elbows
+      // never overlap. Rank ALL siblings converging on this connector by DISTANCE
+      // from it (nearest = innermost) and give each a distinct X track *inside the
+      // actual corridor* between the source exit and the target entry — so the
+      // offset ALWAYS fits (no clamp collapse) however narrow the gap, and works
+      // for any placement (col/row/at/relational). Every edge gets a UNIQUE track,
+      // so no two verticals share an X.
+      const ranked = sibs
+        .slice()
+        // Primary: distance from the connector (nearest = innermost). Tiebreak on
+        // signed Y so two EQUIDISTANT sources (one above, one below) still get
+        // DISTINCT tracks instead of colliding on the same X.
+        .sort((a, b) =>
+          Math.abs(a.key - connectorY) - Math.abs(b.key - connectorY) || a.key - b.key,
+        );
+      const rank = ranked.findIndex((x) => x.id === e.id); // 0 = nearest (innermost)
+      const n = ranked.length;
+      // Corridor between the source's exit edge and the target's entry edge.
+      const srcExitX = sEndSide === "r" ? sR.x + sR.w : sR.x;
+      const tgtEntryX = tEndSide === "l" ? tR.x : tR.x + tR.w;
+      const MARGIN = 24; // keep elbows off the tile faces + clear of the step stub
+      const lo = Math.min(srcExitX, tgtEntryX) + MARGIN;
+      const hi = Math.max(srcExitX, tgtEntryX) - MARGIN;
+      if (n > 0) {
+        // The FARTHER a source is from the connector, the closer its vertical
+        // elbow sits to the TARGET (outer bracket) — its long horizontal run
+        // wraps AROUND the nearer siblings and its vertical drops in past them,
+        // never overlapping. The NEAREST source keeps the shortest, innermost
+        // path (elbow toward the source side). `t` = distance to target, (0..1]:
+        //   rank 0 (nearest)  → t small  → elbow toward SOURCE
+        //   rank n-1 (farthest) → t large → elbow toward TARGET
+        const t = (rank + 1) / n;
+        const toward = tEndSide === "l" ? 1 : -1; // sign toward the target side
+        if (hi > lo) {
+          // Enough room: distribute the nested tracks across the real corridor.
+          centerX = toward === 1 ? lo + t * (hi - lo) : hi - t * (hi - lo);
+        } else {
+          // Corridor too narrow (or source overlaps target): fall back to a fixed
+          // STEP fan out from the mid-gap so the verticals still never share an X.
+          const midX = (srcExitX + tgtEntryX) / 2;
+          const STEP = 16;
+          centerX = midX + toward * (rank + 1) * STEP;
+        }
+      }
     }
     out.set(e.id, {
       sSide: sPort?.side ?? ss,
@@ -209,6 +261,58 @@ export function computeFanLayout(edges: FanEdge[], nodeLookup: NodeLookup): Map<
       tFrac,
       centerX,
     });
+    // For any HORIZONTAL-to-HORIZONTAL edge (both ends l/r) record its vertical
+    // elbow's EFFECTIVE x (explicit centerX, else the smooth-step default = the
+    // midpoint between the two anchor x's) + its Y-extent, so the de-overlap pass
+    // can separate even edges that have NO fan centerX of their own.
+    if ((sEndSide === "l" || sEndSide === "r") && (tEndSide === "l" || tEndSide === "r")) {
+      const sy = sidePoint(sR, sEndSide, out.get(e.id)!.sFrac).y;
+      const ty = sidePoint(tR, tEndSide, tFrac).y;
+      const sx = sEndSide === "r" ? sR.x + sR.w : sR.x;
+      const tx = tEndSide === "l" ? tR.x : tR.x + tR.w;
+      vertSpans.set(e.id, {
+        y0: Math.min(sy, ty),
+        y1: Math.max(sy, ty),
+        effX: centerX ?? (sx + tx) / 2,
+        sy,        // source-anchor Y (orders which of two colliding verticals is "lower")
+        toTarget: Math.sign(tx - sx) || 1, // +1 target is to the right, −1 to the left
+        hasCenter: centerX !== undefined,
+      });
+    }
+  }
+
+  // De-overlap pass — two edges leaving/entering stacked anchors on the same
+  // side (e.g. the medallion's `@out-gold` above `@out-mv`, both heading up-right
+  // to Genie / the dashboard) can land their vertical elbows on the SAME x with
+  // overlapping Y and run parallel/on top of each other. Separate them
+  // DIRECTIONALLY by source-anchor order: the LOWER anchor's elbow moves TOWARD
+  // its target, the HIGHER anchor's moves AWAY — so the two lines cross cleanly
+  // (lower→right, upper→left when the targets are up-right; mirrored otherwise)
+  // instead of doubling up. Fan-nested edges (hasCenter) already have a track and
+  // are left alone. O(E²) over horizontal-run edges only; cheap in practice.
+  const STEP = 12;
+  const X_TOL = 6; // elbows within 6px count as "the same vertical line"
+  const runs = [...vertSpans.entries()]
+    .map(([id, s]) => ({ id, ...s }))
+    .sort((a, b) => a.effX - b.effX || a.sy - b.sy);
+  for (let i = 0; i < runs.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (Math.abs(runs[i].effX - runs[j].effX) > X_TOL) continue; // different column
+      if (!(runs[i].y0 <= runs[j].y1 && runs[j].y0 <= runs[i].y1)) continue; // no Y overlap
+      // Two overlapping verticals on the same column → split them so they CROSS
+      // instead of running parallel: the one whose source anchor is LOWER moves
+      // TOWARD its target, the HIGHER one moves AWAY. (Targets up-right ⇒ lower→
+      // right, upper→left.) Skip fan-nested edges — they own their track.
+      const [lower, higher] = runs[i].sy >= runs[j].sy ? [runs[i], runs[j]] : [runs[j], runs[i]];
+      if (!lower.hasCenter) {
+        lower.effX += lower.toTarget * STEP;      // lower anchor → toward its target
+        out.get(lower.id)!.centerX = lower.effX;
+      }
+      if (!higher.hasCenter) {
+        higher.effX -= higher.toTarget * STEP;    // higher anchor → away from its target
+        out.get(higher.id)!.centerX = higher.effX;
+      }
+    }
   }
 
   cacheSig = sig;

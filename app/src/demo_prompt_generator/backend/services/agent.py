@@ -65,6 +65,7 @@ def _build_claude_env(
     *,
     mode: Mode,
     local_profile: str | None,
+    target_deploy: bool = False,
 ) -> dict[str, str]:
     """Build environment variables for the Claude Code subprocess.
 
@@ -108,7 +109,12 @@ def _build_claude_env(
         env["PATH"] = ":".join(parts)
 
     # Databricks CLI/SDK auth for the agent's shell commands.
-    env.update(subprocess_auth_env(project_dir, mode=mode, local_profile=local_profile))
+    # target_deploy=True → the per-project .databrickscfg holds the deployer-SP
+    # OAuth-M2M creds for a remote TARGET workspace (cross-workspace deploy);
+    # point at it with oauth-m2m and don't scrub. Otherwise the classic OBO env.
+    env.update(subprocess_auth_env(
+        project_dir, mode=mode, local_profile=local_profile, target_deploy=target_deploy
+    ))
 
     # Relocate Claude Code's "user-scope" config tree from ~/.claude/ to
     # <project>/.claude/ so transcripts land inside the project dir. The
@@ -408,6 +414,7 @@ async def stream_agent_response(
     session_id: str | None = None,
     template_lineage: dict | None = None,
     operator_notice: str | None = None,
+    target_deploy: bool = False,
 ) -> AsyncIterator[dict]:
     """
     Stream Claude Code agent responses with client pooling.
@@ -551,6 +558,7 @@ async def stream_agent_response(
                 project_dir,
                 mode=mode,
                 local_profile=databricks_profile,
+                target_deploy=target_deploy,
             )
             # Capture Claude Code's stderr: log each line live AND buffer
             # the tail so the except handler can attach it to the error

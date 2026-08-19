@@ -77,6 +77,10 @@ export interface Project {
   warehouse_name: string | null;
   default_catalog: string | null;
   default_schema: string | null;
+  /** Cross-workspace deploy target (Option A): the workspace URL this
+   *  project's resources deploy INTO. Null = deploy to the app's own host
+   *  workspace. Only effective when the deployer SP is configured server-side. */
+  target_workspace_host?: string | null;
   // Template lineage
   source_template_id?: string | null;
   source_template_name?: string | null;
@@ -472,6 +476,25 @@ export async function setProjectBrand(
   return resp.json();
 }
 
+/** A single idea in the discovery payload (chosen or alternative). Mirrors the
+ *  backend DiscoveryIdea — a subset of UseCaseIdea persisted to
+ *  specifications/data-discovery.md. */
+export interface DiscoveryIdeaInput {
+  title: string;
+  hook?: string;
+  why?: string;
+  fit?: IdeaFit;
+}
+
+/** The "Use existing data" discovery analysis carried into project creation so
+ *  the build agent inherits what the LLM learned. Mirrors backend
+ *  DiscoveryAnalysis. */
+export interface DiscoveryInput {
+  chosen?: DiscoveryIdeaInput;
+  alternatives?: DiscoveryIdeaInput[];
+  reasoning?: string | null;
+}
+
 export async function createProject(
   description: string,
   capabilities: string[] = [],
@@ -480,6 +503,26 @@ export async function createProject(
   architectureFirst = false,
   mode: "story" | "architecture" | "workshop" = "story",
   blankArchitecture = false,
+  // The user's RAW typed/pasted brief, verbatim (no "Help me build…"
+  // wrapper, no capability line, no brand/kickoff appendix). When it's a
+  // substantial pasted spec the backend saves it to context/source-brief.md
+  // so the build agent has a durable, lossless copy of the user's intent.
+  sourceBrief?: string,
+  // "Use existing data": fully-qualified real UC tables (catalog.schema.table)
+  // the demo is built ON. When non-empty the backend writes their schema +
+  // sample rows to specifications/source-tables.md.
+  groundingTables?: string[],
+  // "Use existing data" opt-in: when false (default) the grounded demo is
+  // read-only analytics on the real tables; when true it may create its OWN
+  // auxiliary data (real tables stay read-only). Only meaningful when
+  // groundingTables is non-empty.
+  allowDataWrite = false,
+  // "Use existing data": the analysis the discovery step produced (chosen
+  // use-case + its data-fit rationale, the alternatives it surfaced, the
+  // capability reasoning). When present the backend writes it to
+  // specifications/data-discovery.md so the build agent inherits what the LLM
+  // already learned instead of re-deriving it. Only meaningful when grounded.
+  discovery?: DiscoveryInput,
 ): Promise<Project> {
   const resp = await fetch(apiUrl("/api/projects"), {
     method: "POST",
@@ -492,6 +535,10 @@ export async function createProject(
       architecture_first: architectureFirst,
       blank_architecture: blankArchitecture,
       mode,
+      source_brief: sourceBrief,
+      grounding_tables: groundingTables ?? [],
+      allow_data_write: allowDataWrite,
+      discovery,
     }),
   });
   if (!resp.ok) throw new Error(`Failed to create project: ${resp.status}`);
@@ -515,7 +562,15 @@ export async function getProject(projectId: string): Promise<Project> {
 
 export async function updateProject(
   projectId: string,
-  updates: { name?: string; description?: string; customer?: string; architecture_first?: boolean }
+  updates: {
+    name?: string;
+    description?: string;
+    customer?: string;
+    architecture_first?: boolean;
+    /** Workspace URL to deploy this project's resources into (Option A).
+     *  Empty string clears it (→ deploy to the app's own workspace). */
+    target_workspace_host?: string;
+  }
 ): Promise<Project> {
   const resp = await fetch(apiUrl(`/api/projects/${projectId}`), {
     method: "PATCH",
@@ -523,6 +578,72 @@ export async function updateProject(
     body: JSON.stringify(updates),
   });
   if (!resp.ok) throw new Error(`Failed to update project: ${resp.status}`);
+  return resp.json();
+}
+
+export interface UserSettings {
+  target_workspace_host?: string | null;
+  /** What deploys actually use = user setting or the server default. */
+  effective_target_workspace_host?: string | null;
+  /** Whether the deployer SP is configured (cross-workspace deploy is live).
+   *  When false the deploy-target control is inert, so the UI hides it. */
+  cross_workspace_deploy_enabled?: boolean;
+  /** The server's shared-default host — lets the UI label a saved target that
+   *  equals the default as "shared default" instead of its raw name.
+   *  (`cross_workspace_deploy_enabled` above is the deployer-SP tier gate.) */
+  default_target_workspace_host?: string | null;
+}
+
+/** Per-user account settings (cross-workspace deploy target — applies to ALL
+ *  the user's projects). Set once via the home-page control. */
+export async function getMySettings(): Promise<UserSettings> {
+  const resp = await fetch(apiUrl("/api/me/settings"));
+  if (!resp.ok) throw new Error(`Failed to load settings: ${resp.status}`);
+  return resp.json();
+}
+
+export async function updateMySettings(
+  targetWorkspaceHost: string | null,
+): Promise<UserSettings> {
+  const resp = await fetch(apiUrl("/api/me/settings"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target_workspace_host: targetWorkspaceHost }),
+  });
+  if (!resp.ok) throw new Error(`Failed to save settings: ${resp.status}`);
+  return resp.json();
+}
+
+export interface TargetValidation {
+  host: string;
+  reachable: boolean;
+  is_admin: boolean;
+  region?: string | null;
+  catalog?: string | null;
+  /** ready | out_of_account | needs_admin | region_unsupported | region_unknown */
+  status: string;
+  can_deploy: boolean;
+  message: string;
+  deployer_sp_name?: string | null;
+  /** Application (client) ID the workspace "Add service principal" UI needs. */
+  deployer_sp_application_id?: string | null;
+  admin_settings_url?: string | null;
+  /** Ready-to-show steps (incl. "you must be a workspace admin") when needs_admin. */
+  admin_instructions?: string | null;
+}
+
+/** Validate a candidate cross-workspace deploy target as the deployer SP
+ *  (project-independent — used by the home-page account-level target control).
+ *  Does NOT save it — call updateMySettings once status === "ready". */
+export async function validateMyTarget(
+  targetWorkspaceHost: string,
+): Promise<TargetValidation> {
+  const resp = await fetch(apiUrl(`/api/me/validate-target`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target_workspace_host: targetWorkspaceHost }),
+  });
+  if (!resp.ok) throw new Error(`Failed to validate target: ${resp.status}`);
   return resp.json();
 }
 
@@ -820,6 +941,60 @@ export async function saveProjectFile(
     body: JSON.stringify({ content }),
   });
   if (!resp.ok) throw new Error(`Failed to save file: ${resp.status}`);
+  return resp.json();
+}
+
+/** One architecture-history snapshot (metadata only — content fetched lazily). */
+export interface ArchitectureHistoryEntry {
+  id: number;
+  created_at: string;
+  /** True when this snapshot was created by restoring an earlier version. */
+  is_restore: boolean;
+}
+
+/** A history snapshot's decompressed `architecture.md` markdown. */
+export interface ArchitectureHistoryContent {
+  id: number;
+  created_at: string;
+  content: string;
+}
+
+/** List a project's architecture-history snapshots, newest first (metadata only). */
+export async function listArchitectureHistory(
+  projectId: string,
+  limit = 50
+): Promise<ArchitectureHistoryEntry[]> {
+  const resp = await fetch(
+    apiUrl(`/api/projects/${projectId}/architecture-history?limit=${limit}`),
+  );
+  if (!resp.ok) throw new Error(`Failed to list architecture history: ${resp.status}`);
+  return resp.json();
+}
+
+/** Fetch the decompressed markdown for one architecture-history snapshot. */
+export async function getArchitectureHistoryContent(
+  projectId: string,
+  historyId: number
+): Promise<ArchitectureHistoryContent> {
+  const resp = await fetch(
+    apiUrl(`/api/projects/${projectId}/architecture-history/${historyId}/content`),
+  );
+  if (!resp.ok) throw new Error(`Failed to get architecture history: ${resp.status}`);
+  return resp.json();
+}
+
+/** Restore a snapshot: the backend writes it to architecture.md and records a
+ *  new PROTECTED restore entry (never compacted, alongside its source). Returns
+ *  the restored content so the caller re-seeds the canvas. */
+export async function restoreArchitectureHistory(
+  projectId: string,
+  historyId: number
+): Promise<ArchitectureHistoryContent> {
+  const resp = await fetch(
+    apiUrl(`/api/projects/${projectId}/architecture-history/${historyId}/restore`),
+    { method: "POST" },
+  );
+  if (!resp.ok) throw new Error(`Failed to restore architecture history: ${resp.status}`);
   return resp.json();
 }
 
@@ -1222,19 +1397,220 @@ export async function listWarehouses(): Promise<Warehouse[]> {
   return resp.json();
 }
 
-export async function listCatalogs(query?: string): Promise<string[]> {
-  const params = query ? `?q=${encodeURIComponent(query)}` : "";
-  const resp = await fetch(apiUrl(`/api/resources/catalogs${params}`));
+/** `browse` returns the capped full list when no query is given — for a
+ *  click-to-browse dropdown. Omit it for type-to-search behavior. */
+/** `selectableOnly` filters to objects the CURRENT USER can build on (effective
+ *  USE/SELECT), for the "use existing data" picker — see the backend endpoint. */
+export async function listCatalogs(
+  query?: string,
+  browse?: boolean,
+  selectableOnly?: boolean,
+): Promise<string[]> {
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  if (browse) params.set("browse", "true");
+  if (selectableOnly) params.set("selectable_only", "true");
+  const qs = params.toString();
+  const resp = await fetch(apiUrl(`/api/resources/catalogs${qs ? `?${qs}` : ""}`));
   if (!resp.ok) throw new Error(`Failed to list catalogs: ${resp.status}`);
   return resp.json();
 }
 
-export async function listSchemas(catalog: string, query?: string): Promise<string[]> {
+export async function listSchemas(
+  catalog: string,
+  query?: string,
+  browse?: boolean,
+  selectableOnly?: boolean,
+): Promise<string[]> {
   const params = new URLSearchParams({ catalog });
   if (query) params.set("q", query);
+  if (browse) params.set("browse", "true");
+  if (selectableOnly) params.set("selectable_only", "true");
   const resp = await fetch(apiUrl(`/api/resources/schemas?${params}`));
   if (!resp.ok) throw new Error(`Failed to list schemas: ${resp.status}`);
   return resp.json();
+}
+
+export async function listTables(
+  catalog: string,
+  schema: string,
+  query?: string,
+  selectableOnly?: boolean,
+): Promise<string[]> {
+  const params = new URLSearchParams({ catalog, schema });
+  if (query) params.set("q", query);
+  if (selectableOnly) params.set("selectable_only", "true");
+  const resp = await fetch(apiUrl(`/api/resources/tables?${params}`));
+  if (!resp.ok) throw new Error(`Failed to list tables: ${resp.status}`);
+  return resp.json();
+}
+
+export interface ColumnMetadata {
+  name: string;
+  type_text: string | null;
+  type_name: string | null;
+  nullable: boolean | null;
+  comment: string | null;
+}
+
+export interface TableMetadata {
+  full_name: string;
+  name: string | null;
+  comment: string | null;
+  table_type: string | null;
+  columns: ColumnMetadata[];
+}
+
+/** Fetch column-level metadata (schema only, never data) for the given
+ *  fully-qualified tables (catalog.schema.table). */
+export async function getTableMetadata(tables: string[]): Promise<TableMetadata[]> {
+  if (tables.length === 0) return [];
+  const params = new URLSearchParams({ tables: tables.join(",") });
+  const resp = await fetch(apiUrl(`/api/resources/table-metadata?${params}`));
+  if (!resp.ok) throw new Error(`Failed to get table metadata: ${resp.status}`);
+  return resp.json();
+}
+
+export interface WorkspaceInfo {
+  host: string | null;
+  workspace_id: string | null;
+}
+
+/** The connected workspace's host + id, for building Catalog Explorer links. */
+export async function getWorkspaceInfo(): Promise<WorkspaceInfo> {
+  const resp = await fetch(apiUrl("/api/resources/workspace-info"));
+  if (!resp.ok) throw new Error(`Failed to get workspace info: ${resp.status}`);
+  return resp.json();
+}
+
+/** One table's light scan summary (the full stats stay server-side). */
+export interface GroundingScannedTable {
+  full_name: string;
+  row_count: number | null;
+  column_count: number;
+  sampled: number;
+  error: string | null;
+}
+
+export interface GroundingScanResult {
+  scanned: GroundingScannedTable[];
+  warehouse_id: string | null;
+  warehouse_name: string | null;
+}
+
+/** Live progress from a grounding scan (SSE). `warehouse` fires once (with
+ *  whether the warehouse is cold-starting), then `scanning` fires per completed
+ *  table (tables scan in parallel, so `done` climbs as each finishes). */
+export interface ScanProgress {
+  phase: "warehouse" | "scanning";
+  /** warehouse phase: the resolved warehouse isn't RUNNING (paying a cold start). */
+  warehouseStarting?: boolean;
+  warehouseName?: string | null;
+  /** scanning phase: k of N tables done, and the one that just finished. */
+  done?: number;
+  total?: number;
+  table?: string | null;
+}
+
+/** Scan picked real UC tables (schema + light stats + a few sample rows) to warm
+ *  the server-side cache the suggest stream reads from. This is what
+ *  "Generate a story" triggers before requesting grounded ideas. Reads real DATA
+ *  server-side; only a light summary comes back. Streams progress (SSE) so the
+ *  caller can show what's happening (starting the warehouse vs reading tables);
+ *  resolves with the final summary once the `done` event arrives. */
+export async function scanGroundingTables(
+  tables: string[],
+  onProgress?: (p: ScanProgress) => void,
+  signal?: AbortSignal,
+): Promise<GroundingScanResult> {
+  const resp = await fetch(apiUrl("/api/grounding/scan"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tables }),
+    signal,
+  });
+  if (!resp.ok || !resp.body) {
+    let detail = `Scan failed: ${resp.status}`;
+    try {
+      const body = await resp.json();
+      if (body && typeof body === "object" && "detail" in body) detail = String((body as { detail: unknown }).detail);
+    } catch {
+      // non-JSON / streamed error body — keep the status-code message
+    }
+    throw new Error(detail);
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: GroundingScanResult = { scanned: [], warehouse_id: null, warehouse_name: null };
+  let errorDetail: string | null = null;
+
+  const handleFrame = (frame: string) => {
+    let event = "message";
+    let data = "";
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data += line.slice(5).trim();
+    }
+    if (!data) return;
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (event === "warehouse") {
+      onProgress?.({
+        phase: "warehouse",
+        warehouseStarting: Boolean(payload.starting),
+        warehouseName: (payload.name as string) ?? null,
+      });
+    } else if (event === "scanning") {
+      onProgress?.({
+        phase: "scanning",
+        done: payload.done as number,
+        total: payload.total as number,
+        table: (payload.table as string) ?? null,
+      });
+    } else if (event === "done") {
+      result = {
+        scanned: (payload.scanned as GroundingScannedTable[]) ?? [],
+        warehouse_id: null,
+        warehouse_name: (payload.warehouse_name as string) ?? null,
+      };
+    } else if (event === "error") {
+      errorDetail = String(payload.detail ?? "Scan failed");
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      handleFrame(buffer.slice(0, idx));
+      buffer = buffer.slice(idx + 2);
+    }
+  }
+  if (buffer.trim()) handleFrame(buffer);
+  if (errorDetail) throw new Error(errorDetail);
+  return result;
+}
+
+/** Build a Catalog Explorer deep link for a UC asset. `parts` is the dotted
+ *  path (["catalog"], ["catalog","schema"], or ["catalog","schema","table"]).
+ *  Returns null when the workspace host is unknown, so callers can hide the
+ *  link rather than render a broken one. */
+export function ucExploreUrl(
+  info: WorkspaceInfo | null,
+  parts: string[],
+): string | null {
+  if (!info?.host || parts.length === 0) return null;
+  const path = parts.map(encodeURIComponent).join("/");
+  const o = info.workspace_id ? `?o=${info.workspace_id}` : "";
+  return `${info.host}/explore/data/${path}${o}`;
 }
 
 export interface ResourceDefaults {
@@ -1340,6 +1716,9 @@ export async function* streamWorkspaceGenerate(
 // Templates API
 // ---------------------------------------------------------------------------
 
+/** What kind of template — drives the gallery tag + the ?type= filter. */
+export type TemplateType = "SOLUTION" | "WORKSHOP" | "GENIE_WORKSHOP" | "ARCHITECTURE";
+
 export interface TemplateListItem {
   id: string;
   name: string;
@@ -1352,6 +1731,8 @@ export interface TemplateListItem {
   capabilities: string[] | null;
   /** Curated/seeded template — featured treatment + surfaced on /internal-demos. */
   official?: boolean;
+  /** SOLUTION (default, full demo) / WORKSHOP / GENIE_WORKSHOP / ARCHITECTURE. */
+  template_type?: TemplateType;
   /** Whether a hero screenshot exists (fetch via templateScreenshotUrl). */
   has_screenshot?: boolean;
   /** Total gallery images (hero + extras). >1 → the sheet shows a carousel. */
@@ -1426,11 +1807,13 @@ export interface TemplateSearchResult {
 
 export async function listTemplates(
   status?: string,
-  industry?: string
+  industry?: string,
+  type?: TemplateType | string
 ): Promise<TemplateListItem[]> {
   const params = new URLSearchParams();
   if (status) params.set("status", status);
   if (industry) params.set("industry", industry);
+  if (type) params.set("type", type);
 
   const url = apiUrl(`/api/templates${params.toString() ? `?${params}` : ""}`);
   const resp = await fetch(url);
@@ -1602,10 +1985,21 @@ export interface CapabilityInput {
   status: "selected" | "unselected" | null;
 }
 
+/** Consultation signal (grounded "Use existing data" flow only): how well the
+ *  user's REAL selected tables support this idea. Absent in synthetic mode. */
+export interface IdeaFit {
+  tier: "Great" | "Good" | "Possible";
+  reason: string;
+}
+
 export interface UseCaseIdea {
   title: string;
   hook: string;
   datasources: string[];
+  fit?: IdeaFit;
+  /** Longer "why this demo is compelling" rationale, shown when the idea is
+   *  expanded (grounded flow fills it; optional elsewhere). */
+  why?: string;
 }
 
 export interface IdeaToRefine {
@@ -1660,7 +2054,16 @@ export async function* streamSuggestCapabilities(
   /** Capabilities-only mode (architecture tab): the LLM selects matching
    *  capabilities from the text — NO use-case ideas. The stream emits only
    *  `capabilities` (+ `reasoning`); never `count`/`idea`. */
-  capabilitiesOnly?: boolean
+  capabilitiesOnly?: boolean,
+  /** "Use existing data": fully-qualified UC tables (catalog.schema.table) the
+   *  user picked. When set, the backend injects their scanned schema + stats +
+   *  sample rows and REQUIRES the story to be built on ONLY these tables.
+   *  Warm the server cache first via `scanGroundingTables`. */
+  groundingTables?: string[],
+  /** "Use existing data" opt-in: when false (default) suggested use-cases are
+   *  read-only analytics; when true the demo may create its own auxiliary data
+   *  so write-needing capabilities are proposed too. */
+  allowDataWrite = false
 ): AsyncGenerator<SuggestEvent> {
   const body: Record<string, unknown> = { prompt, capabilities };
   if (previousIdeas && previousIdeas.length > 0) {
@@ -1678,6 +2081,10 @@ export async function* streamSuggestCapabilities(
   }
   if (capabilitiesOnly) {
     body.capabilities_only = true;
+  }
+  if (groundingTables && groundingTables.length > 0) {
+    body.grounding_tables = groundingTables;
+    if (allowDataWrite) body.allow_data_write = true;
   }
 
   const resp = await fetch(apiUrl("/api/capabilities/suggest"), {
@@ -1779,18 +2186,26 @@ export interface StatsStageCount {
   count: number;
 }
 
+export interface StatsModeCount {
+  mode: string;
+  count: number;
+}
+
 export interface StatsProjectRow {
   id: string;
   name: string;
   user_email: string;
   stage: string;
   project_type: string;
+  mode: string;
   message_count: number;
   has_active_execution: boolean;
   source_template_id: string | null;
   created_at: string;
   updated_at: string;
 }
+
+export type StatsGranularity = "day" | "week" | "month";
 
 export interface Stats {
   total_projects: number;
@@ -1799,11 +2214,16 @@ export interface Stats {
   projects_last_7d: number;
   projects_last_30d: number;
   active_executions: number;
+  range_start: string;
+  range_end: string;
+  granularity: StatsGranularity;
   projects_per_day: StatsDayCount[];
   messages_per_day: StatsDayCount[];
   by_stage: StatsStageCount[];
+  by_mode: StatsModeCount[];
   top_owners: StatsOwnerCount[];
   projects: StatsProjectRow[];
+  total_filtered: number;
   page: number;
   page_size: number;
   total_pages: number;
@@ -1811,21 +2231,58 @@ export interface Stats {
 
 export interface StatsQuery {
   days?: number;
+  start?: string; // ISO YYYY-MM-DD (overrides days)
+  end?: string; // ISO YYYY-MM-DD (overrides days)
+  granularity?: StatsGranularity;
   page?: number;
   page_size?: number;
   owner_filter?: string;
+  stage_filter?: string;
+  mode_filter?: string;
+  top_owners_limit?: number;
 }
 
-export async function getStats(query: StatsQuery = {}): Promise<Stats> {
+function statsParams(query: StatsQuery): URLSearchParams {
   const params = new URLSearchParams();
   if (query.days != null) params.set("days", String(query.days));
+  if (query.start) params.set("start", query.start);
+  if (query.end) params.set("end", query.end);
+  if (query.granularity) params.set("granularity", query.granularity);
   if (query.page != null) params.set("page", String(query.page));
   if (query.page_size != null) params.set("page_size", String(query.page_size));
   if (query.owner_filter) params.set("owner_filter", query.owner_filter);
-  const qs = params.toString();
+  if (query.stage_filter) params.set("stage_filter", query.stage_filter);
+  if (query.mode_filter) params.set("mode_filter", query.mode_filter);
+  if (query.top_owners_limit != null) params.set("top_owners_limit", String(query.top_owners_limit));
+  return params;
+}
+
+export async function getStats(query: StatsQuery = {}): Promise<Stats> {
+  const qs = statsParams(query).toString();
   const resp = await fetch(apiUrl(`/api/stats${qs ? `?${qs}` : ""}`));
   if (!resp.ok) throw new Error(`Failed to load stats: ${resp.status}`);
   return resp.json();
+}
+
+/**
+ * Fetch the full (filter-respecting, un-paginated) project list as CSV text.
+ * Only the table filters matter here; range/granularity/pagination are ignored
+ * by the export endpoint.
+ */
+export async function exportStatsProjectsCsv(
+  query: Pick<StatsQuery, "owner_filter" | "stage_filter" | "mode_filter"> = {},
+): Promise<{ csv: string; truncated: boolean }> {
+  const params = new URLSearchParams();
+  if (query.owner_filter) params.set("owner_filter", query.owner_filter);
+  if (query.stage_filter) params.set("stage_filter", query.stage_filter);
+  if (query.mode_filter) params.set("mode_filter", query.mode_filter);
+  const qs = params.toString();
+  const resp = await fetch(apiUrl(`/api/stats/projects/export${qs ? `?${qs}` : ""}`));
+  if (!resp.ok) throw new Error(`Failed to export projects: ${resp.status}`);
+  return {
+    csv: await resp.text(),
+    truncated: resp.headers.get("X-Export-Truncated") === "true",
+  };
 }
 
 // ---------------------------------------------------------------------------

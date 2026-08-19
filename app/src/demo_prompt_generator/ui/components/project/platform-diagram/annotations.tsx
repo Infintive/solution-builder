@@ -11,7 +11,7 @@ import { DATABRICKS_ICONS, BRAND_ICONS, BRAND_ICON_LABEL_COLOR, type DatabricksI
 import { FILE_ICONS, FileSvgIcon, isFileIconKey, logoMetaByName, logoAliases } from "../../file-icons";
 import INDUSTRY_MAP from "../../../icons/industry-map.json";
 import { BrandMark } from "./brand-mark";
-import { type AnnotationData, type AnnotationVariant, isCustomIconKey, customLogoId } from "@/lib/platform-architecture";
+import { type AnnotationData, type AnnotationVariant, isCustomIconKey, customLogoId, logoFootprint, LOGO_CAP_GAP, LOGO_CAP_PAD } from "@/lib/platform-architecture";
 import { RotatableCard, DropTargetContext, EditModeContext, CustomLogosContext, AutoEditContext, InlineSvgIcon, type NodeData } from "./shared";
 
 /** Render any icon key — a built-in DatabricksIconName, a file-icon key
@@ -45,6 +45,7 @@ export const ANNOTATION_DEFAULT_SIZE: Record<AnnotationVariant, { w: number; h: 
   box: { w: 320, h: 180 },
   logo: { w: 60, h: 60 },
   image: { w: 200, h: 140 },
+  note: { w: 180, h: 140 },
 };
 
 // The positioned-icon-tile sizing helpers now live in shared.tsx (used by the
@@ -63,6 +64,7 @@ export const AnnotationNode = memo(function AnnotationNode({ data, selected }: N
   const editMode = useContext(EditModeContext);
   const [editing, setEditing] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState<string | null>(null);
+  const [editingDesc, setEditingDesc] = useState<string | null>(null);
 
   const commit = () => {
     if (editing !== null) {
@@ -76,12 +78,20 @@ export const AnnotationNode = memo(function AnnotationNode({ data, selected }: N
       setEditingTitle(null);
     }
   };
+  const commitDesc = () => {
+    if (editingDesc !== null) {
+      // A logo desc renders as the muted 2nd caption line; setting it turns the
+      // line ON (showDesc), clearing it back to empty leaves it addable in edit.
+      d.onAnnotate(d.nodeId, { desc: editingDesc, showDesc: editingDesc.trim() ? true : false });
+      setEditingDesc(null);
+    }
+  };
 
-  // A freshly-dropped TEXT node auto-enters edit mode so the cursor lands in it
-  // (like any editor). Consume the one-shot signal so it doesn't re-fire.
+  // A freshly-dropped TEXT or NOTE node auto-enters edit mode so the cursor lands
+  // in it (like any editor). Consume the one-shot signal so it doesn't re-fire.
   const autoEdit = useContext(AutoEditContext);
   useEffect(() => {
-    if (autoEdit.id === d.nodeId && a.variant === "text") {
+    if (autoEdit.id === d.nodeId && (a.variant === "text" || a.variant === "note")) {
       setEditing(a.text ?? "");
       autoEdit.clear();
     }
@@ -147,27 +157,59 @@ export const AnnotationNode = memo(function AnnotationNode({ data, selected }: N
     onResizeRef.current(d.nodeId, w, h, undefined, center);
   }, [isTextVariant, sizingText, fontSize, fontWeight, scale, d.nodeId, rf]);
 
-  // The LOGO variant renders as a full-box icon with its caption floating
-  // OUTSIDE the box (see the short-circuit below). Normalize the legacy caption
-  // values: "side"→right, "below"→bottom; unset → bottom.
+  // The LOGO variant renders as a centered icon+caption flex (see the
+  // short-circuit below). Normalize the legacy caption values: "side"→right,
+  // "below"→bottom; unset → bottom.
   const capNorm = a.caption === "side" ? "right" : a.caption === "below" ? "bottom" : a.caption;
 
   if (a.variant === "logo") {
-    // The logo icon ALWAYS fills the full box (it's square/natural). The caption
-    // renders OUTSIDE the box on the chosen side, so it never shrinks the logo.
+    // The logo renders as ONE centered unit: a fixed icon square + the caption
+    // laid out beside/below it in a flex that FILLS the node box. Because the
+    // flex container == the box (centered on the node position), the whole
+    // icon+caption group reads as centered — so it sits centered inside a wrapping
+    // box or a column (the off-center-caption bug). The node box is sized to the
+    // full icon+caption footprint (see flow-mapping schemaToFlow + computeLayout's
+    // sizeOf, both via `logoFootprint`); the icon keeps its natural square.
     const pos = capNorm ?? "bottom";
     const fontSize = a.fontSize ?? 13;
     // Caption color: explicit fontColor wins; otherwise, if the icon has a
     // signature hue (medallion layers), match the label to it; else foreground.
     const labelColor = d.fontColor ?? (a.icon ? BRAND_ICON_LABEL_COLOR[a.icon as DatabricksIconName] : undefined);
-    // Where the caption sits relative to the box + which way it grows so it stays
-    // centered on the logo's edge (top/bottom center horizontally; left/right
-    // center vertically and grow away from the box).
-    const capClass =
-      pos === "top" ? "bottom-full left-1/2 -translate-x-1/2 mb-1 text-center"
-      : pos === "bottom" ? "top-full left-1/2 -translate-x-1/2 mt-1 text-center"
-      : pos === "left" ? "right-full top-1/2 -translate-y-1/2 mr-1.5 text-right"
-      : "left-full top-1/2 -translate-y-1/2 ml-1.5 text-left"; // right
+    const horizontal = pos === "left" || pos === "right";
+    // The icon keeps its natural square (the default logo size); the box is the
+    // full icon+caption footprint. When the file stored no explicit w/h (a
+    // col-placed logo), DERIVE that footprint here so the card fills the RF node
+    // box (flow-mapping computed the same box via `logoFootprint`). A dragged /
+    // add-time-sized logo (d.w/d.h set) keeps its box, and the icon square then
+    // tracks the box's short axis so a resize scales the whole unit.
+    const iconNat = ANNOTATION_DEFAULT_SIZE.logo.h;
+    const fit = logoFootprint(ANNOTATION_DEFAULT_SIZE.logo.w, iconNat, a);
+    // A captioned logo in a same-lane group carries a DERIVED lane-uniform width
+    // (`d.laneW`, computeLayout step 2.5) so grouped cards match; the flex then
+    // hugs the icon to the caption-side edge (below) so the icons still line up.
+    // A user resize (`d.w`) wins; else `laneW`; else the tight icon+caption fit.
+    const laneW = (d as NodeData).laneW;
+    const boxW = d.w ?? laneW ?? fit.w;
+    const boxH = d.h ?? fit.h;
+    // When a uniform lane width is imposed (box wider than the tight fit), the
+    // icon+caption unit must hug the caption-side edge instead of centering — the
+    // group's icons all sit on the same lane edge (step 2.5 aligned the boxes).
+    const hugEdge = !d.w && laneW !== undefined && horizontal;
+    // Icon square: the box's SHORT axis (minus padding) for a horizontal caption
+    // (width grows for text, height is the icon), else the box width for vertical.
+    const iconSq = Math.max(
+      12,
+      horizontal ? boxH - LOGO_CAP_PAD * 2 : Math.min(boxW - LOGO_CAP_PAD * 2, boxH - LOGO_CAP_GAP),
+    );
+    // Flex direction so the icon+caption group is centered as a unit: row for
+    // right (icon→text), row-reverse for left, column for bottom, column-reverse
+    // for top. `items-center justify-center` centers the whole group in the box.
+    const flexDir =
+      pos === "right" ? "flex-row"
+      : pos === "left" ? "flex-row-reverse"
+      : pos === "bottom" ? "flex-col"
+      : "flex-col-reverse"; // top
+    const capAlign = horizontal ? (pos === "left" ? "text-right" : "text-left") : "text-center";
     const hasText = !!a.text;
     // Show the caption when: editing, or it has text, OR it's edit-mode AND
     // SELECTED (the faint "Add label…" placeholder only appears once the logo is
@@ -206,11 +248,51 @@ export const AnnotationNode = memo(function AnnotationNode({ data, selected }: N
         </span>
       )
     ) : null;
+    // Optional SECOND caption line — a smaller, muted description under the label
+    // (e.g. a domain logo "Airline" / "Flights, crew & ops data"). Shown when it
+    // has text (showDesc), or as an "Add description…" affordance once the logo is
+    // selected in edit mode. Only sensible for a top/bottom caption (a left/right
+    // side caption stays single-line — stacking there reads badly).
+    const descFontSize = Math.max(10, fontSize - 2);
+    const hasDesc = !!(a.showDesc && a.desc);
+    const descLine = (pos === "top" || pos === "bottom") && (editingDesc !== null || hasDesc || (editMode && selected)) ? (
+      editingDesc !== null ? (
+        <input
+          autoFocus
+          value={editingDesc}
+          onChange={(e) => setEditingDesc(e.target.value)}
+          onBlur={commitDesc}
+          onKeyDown={(e) => { if (e.key === "Enter") commitDesc(); else if (e.key === "Escape") setEditingDesc(null); e.stopPropagation(); }}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          className="mt-0.5 w-32 rounded border border-primary/40 bg-background px-1 text-center outline-none"
+          style={{ fontSize: descFontSize }}
+        />
+      ) : hasDesc ? (
+        <span
+          className="mt-0.5 block max-w-[220px] text-center leading-tight text-muted-foreground"
+          style={{ fontSize: descFontSize, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+          title={a.desc}
+          onDoubleClick={(e) => { e.stopPropagation(); setEditingDesc(a.desc ?? ""); }}
+        >
+          {a.desc}
+        </span>
+      ) : (
+        <span
+          className="mt-0.5 block text-center italic text-muted-foreground/40"
+          style={{ fontSize: descFontSize }}
+          title="Double-click to add a description"
+          onDoubleClick={(e) => { e.stopPropagation(); setEditingDesc(""); }}
+        >
+          Add description…
+        </span>
+      )
+    ) : null;
     return (
       <RotatableCard
         rot={d.rot}
-        w={d.w ?? ANNOTATION_DEFAULT_SIZE.logo.w}
-        h={d.h ?? ANNOTATION_DEFAULT_SIZE.logo.h}
+        w={boxW}
+        h={boxH}
         scale={d.scale ?? 1}
         editMode={editMode}
         selected={!!selected}
@@ -218,20 +300,94 @@ export const AnnotationNode = memo(function AnnotationNode({ data, selected }: N
         onResize={(w, h, center) => d.onResize(d.nodeId, w, h, undefined, center)}
         onContext={(e) => { e.preventDefault(); d.onContext(d.nodeId, e.clientX, e.clientY); }}
       >
-        {/* Wrapper is relative so the caption can float OUTSIDE the box.
-            Double-clicking the LOGO ITSELF (not just the caption) opens label
-            editing — the mark fills the box, so this is the obvious target. */}
+        {/* Icon + caption as ONE centered flex FILLING the box. Because the
+            container is the box (centered on the node position), the whole
+            icon+caption group reads as centered — so it sits centered inside a
+            wrapping box / column instead of the icon centering while the caption
+            spills off one side (the bug). Double-clicking the group opens label
+            editing. */}
         <div
-          className="relative h-full w-full"
+          className={`flex h-full w-full items-center ${hugEdge ? "justify-start" : "justify-center"} ${flexDir}`}
+          style={{ padding: LOGO_CAP_PAD }}
           onClick={() => d.onSelect(d.nodeId)}
           onDoubleClick={editMode ? (e) => { e.stopPropagation(); setEditing(a.text ?? ""); } : undefined}
         >
           <AnyIcon
             iconKey={a.icon ?? "data"}
-            className="h-full w-full [&_svg]:h-full [&_svg]:w-full"
-            style={d.iconColor ? { color: d.iconColor } : undefined}
+            className="shrink-0 [&_svg]:h-full [&_svg]:w-full"
+            style={{ width: iconSq, height: iconSq, ...(d.iconColor ? { color: d.iconColor } : {}) }}
           />
-          {caption && <div className={`pointer-events-auto absolute z-10 ${capClass}`}>{caption}</div>}
+          {(caption || descLine) && (
+            <div
+              className={`pointer-events-auto flex min-w-0 flex-col ${capAlign} ${horizontal ? (pos === "left" ? "mr-1.5 items-end" : "ml-1.5 items-start") : pos === "top" ? "mb-1 items-center" : "mt-1 items-center"}`}
+            >
+              {caption}
+              {descLine}
+            </div>
+          )}
+        </div>
+      </RotatableCard>
+    );
+  }
+
+  // ─── NOTE (post-it) ────────────────────────────────────────────────────────
+  // A stylized sticky note: a soft-yellow card with a subtle shadow + tiny tilt,
+  // holding an editable comment. Drop it anywhere to annotate the diagram. Reuses
+  // the same editing/commit machinery as text; `fillColor` overrides the paper
+  // color and `fontColor`/`fontSize` the ink.
+  if (a.variant === "note") {
+    const paper = d.fillColor && d.fillColor !== "transparent" ? d.fillColor : "#FEF3C7"; // amber-100
+    return (
+      <RotatableCard
+        rot={d.rot}
+        w={d.w ?? ANNOTATION_DEFAULT_SIZE.note.w}
+        h={d.h ?? ANNOTATION_DEFAULT_SIZE.note.h}
+        scale={1}
+        editMode={editMode}
+        selected={!!selected}
+        forceDots={isDropTarget}
+        onResize={(w, h, center) => d.onResize(d.nodeId, w, h, undefined, center)}
+        onContext={(e) => { e.preventDefault(); d.onContext(d.nodeId, e.clientX, e.clientY); }}
+      >
+        <div
+          className={`relative h-full w-full overflow-hidden ${selected ? "ring-2 ring-primary/60" : ""}`}
+          onClick={() => d.onSelect(d.nodeId)}
+          onDoubleClick={(e) => { e.stopPropagation(); setEditing(a.text ?? ""); }}
+          title="Double-click to edit the note"
+          style={{
+            background: paper,
+            // A gentle "peeled corner" feel: rounded except a squared top-left,
+            // a warm shadow, and a hairline border a shade darker than the paper.
+            borderRadius: "2px 10px 10px 10px",
+            boxShadow: "0 3px 8px rgba(120,90,10,0.18), inset 0 1px 0 rgba(255,255,255,0.5)",
+            border: "1px solid rgba(180,140,20,0.35)",
+            transform: d.rot === undefined ? "rotate(-1.2deg)" : undefined, // tiny default tilt (unless the user rotated it)
+            opacity: d.opacity,
+          }}
+        >
+          {editing !== null ? (
+            <textarea
+              autoFocus
+              value={editing}
+              onChange={(e) => setEditing(e.target.value)}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) commit();
+                else if (e.key === "Escape") setEditing(null);
+                e.stopPropagation();
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="absolute inset-0 h-full w-full resize-none overflow-auto whitespace-pre-wrap break-words border-0 bg-transparent p-2.5 outline-none"
+              style={{ fontSize: fontSize || 13, lineHeight: 1.35, color: d.fontColor || "#78350F", fontWeight }}
+            />
+          ) : (
+            <div
+              className="h-full w-full overflow-hidden whitespace-pre-wrap break-words p-2.5"
+              style={{ fontSize: fontSize || 13, lineHeight: 1.35, color: d.fontColor || "#78350F", fontWeight }}
+            >
+              {a.text || <span className="italic opacity-50">Note…</span>}
+            </div>
+          )}
         </div>
       </RotatableCard>
     );
@@ -568,8 +724,17 @@ export function IconPicker({
   const matches = items.filter(
     (i) => (tab === "All" || i.tabs.includes(tab)) && (!ql || i.search.includes(ql)) && (!sourcesOnly || i.source),
   );
+  // `data-arch-overlay` marks this as an overlay UI surface: the canvas's
+  // device-aware wheel handler (Canvas `onWheelCapture`) skips any wheel over such
+  // a surface, so a trackpad two-finger scroll here scrolls the grid instead of
+  // panning the diagram behind. `overscroll-contain` on the grid stops the scroll
+  // from chaining once it bottoms out.
   return (
-    <div className="fixed inset-0 z-[60] grid place-items-center bg-background/60" onClick={onClose}>
+    <div
+      data-arch-overlay=""
+      className="fixed inset-0 z-[60] grid place-items-center bg-background/60"
+      onClick={onClose}
+    >
       <div
         className="flex max-h-[78vh] w-[min(680px,94vw)] flex-col rounded-xl border border-border bg-card shadow-2xl"
         onClick={(e) => e.stopPropagation()}
@@ -600,7 +765,7 @@ export function IconPicker({
             </button>
           ))}
         </div>
-        <div className="grid grid-cols-7 gap-2 overflow-y-auto p-3">
+        <div className="grid grid-cols-7 gap-2 overflow-y-auto overscroll-contain p-3">
           {matches.slice(0, 400).map((i) => (
             <button
               key={i.key}

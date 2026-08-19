@@ -5,25 +5,70 @@ description: Create or edit a Databricks solution-architecture diagram — a Luc
 
 # Databricks Architecture Diagram
 
-A left→right "Data + AI Platform" picture: sources → governed pipeline → compute → dashboards / Genie / apps → end user, on one governed platform.
+**Section map** (jump to the one canonical home for each topic):
+- *Designing from a request* → **Step 0** read the request's shape · **Step 0.5** where extra context goes (`desc`/`note`/`label`/`ai_reasoning`) · **Step 1** which diagram kind · **Step 2** how much to infer · **Step 2.5** how to draw the data layer.
+- *Workflow* → copy a renderer HTML, render to PNG, iterate.
+- *The format* → the JSON schema, worked example, **Tabs**, **Positioning** (placement resolution order), **Columns/rowGrid**, **Relational placement**, field tables (**A node** / **An edge**), **Containers**, **physical layout**, **Annotations**, **Custom logos**.
+- *Component catalog* → the per-component `wiring:` map (the authoritative edge guide) + icon bank + **Sources**.
+- *Authoring rules* → the terse do/don't checklist. *Reference files* → the `.jsonc` examples.
 
-The file is a **flat list of `nodes` + `edges`** — a node is on the canvas iff it's in `nodes` (no visibility/state/diffing). **Author STRUCTURE, not pixels:** put each node in a **`col`** (left→right lane, stacked by `row`); draw **edges by node id** (handle inferred); **`wraps`** a group in a box that auto-sizes. You almost never write `at` — reserve it for a node you hand-place (a user drag persists there too).
+A Databricks solution architecture, drawn to fit **what the request actually describes**. That might be:
+- a left→right **flow** (sources → pipeline → compute → dashboards/Genie/apps), the common shape for a single use-case; OR
+- a **layered platform** — Databricks added ALONGSIDE an existing stack, or an ask written as explicit LAYERS (ingestion / governance / intelligence / agents / apps) → the layers organize the diagram (usually into lanes); OR
+- a **governance / infra** containment picture (UC hierarchy, or cloud/VPC boxes).
 
-**Before wiring edges, read `reference/platform_architecture.md`** — it's the map of which component feeds which (sources → `lakeflow`/`sdp` → `sql-lakehouse` → `ai-bi-dashboard`/`genie`; `supervisor-agent` → `genie`/`knowledge-assistant`; `lakebase` syncs `sdp` tables + powers apps). That's what makes the data flow correct, not just plausible.
+**Do NOT force every request into the sources→serve funnel.** The funnel is one shape among several — match the diagram to the request's own structure (see *Designing the architecture* → Step 0). A prompt that lists layers, names external (non-Databricks) systems, or asks for an integration seam wants the **layered** shape, not the funnel.
+
+**The architecture must ultimately make sense.** A user describes what they want in their own words and often leaves out the connective tissue — if they name dashboards and agents but no data layer or compute, ADD what's needed so the story holds together; a diagram missing its ingestion / compute / governance backbone isn't right. Respect what they asked for and keep their emphasis. Equally, don't over-engineer: if a detail wasn't asked for and doesn't help the story, leave it out. Aim for the **smallest architecture that is complete and correct for THIS ask.**
+
+**Overarching principle — fidelity scales with how specific the ask is.** Two goals are in tension: *do exactly what the user said* and *make the architecture make sense*. Which wins depends on how precise and how recent the instruction is:
+- **A loose first description** (a use-case, pasted notes, a rough vision — often hand-wavy, sometimes not 100% internally consistent) → your job is **interpretive**: honor the intent and emphasis as much as possible, but fill the gaps and quietly reconcile contradictions so the result holds together. Here *make-it-make-sense* leads. Don't refuse or flag every inconsistency — resolve it into a coherent diagram.
+- **A specific instruction** ("connect X to Y", "put the model upstream", "drop the dashboard", "these three are one block") → **respect it literally**, even if you'd have drawn it differently. Precise beats your sense of a tidier architecture.
+- **A follow-up correction is the STRONGEST signal there is.** When the user edits or corrects the diagram, do exactly that and do NOT silently revert it toward what seems cleaner to you — if their change looks odd, keep it and record the why in `ai_reasoning`, don't overrule it. Later + more-specific always wins over earlier + vaguer (and over your own defaults).
+
+The rule of thumb: **the vaguer the ask, the more you shape it; the more specific or corrective the ask, the more you obey it verbatim.**
+
+The file is a **flat list of `nodes` + `edges`** — a node is on the canvas iff it's in `nodes` (no visibility/state/diffing). **Author STRUCTURE, not pixels:** place with `col`/`row` lanes, relational fields, `wraps` boxes, and `pin` banners — you almost never write `at`. These compose in a fixed resolution order — full rules in *Positioning* below.
+
+**Edges follow the catalog `wiring:` lines.** Each component's `wiring:` line (in the *Component catalog*) is the authoritative map of what it consumes/depends on: a plain entry is the **normal** edge (draw it when both components are present), one marked *(optional)* is added when the story calls for it. They're the typical connections, not an exhaustive whitelist — a genuine edge the story needs is fine; just don't invent a connection a component wouldn't actually have. **Read the relevant rows before wiring.**
+
+**Avoid floating components.** A **participating** component — one that's IN the data flow — **should** connect to something; by default it doesn't sit on the canvas unwired. `sql-lakehouse` reads from the medallion; `ai-bi-dashboard`/`genie` read from the lakehouse; an app reads from `lakebase`/features and fronts a model; `lakebase` syncs from the pipeline and powers the app. If you place one of these and can't trace an edge into or out of it (following its `wiring:` line), you either forgot the edge or the tile doesn't belong — fix one or the other. The **exception is GLOBAL / cross-cutting things that are ABOUT the whole architecture, not a step in it**: a `type:"note"`/`text` annotation, the `db-platform` banner, a wrapping `box`, and platform-spanning governance (`unity-catalog`/`governance-block`) legitimately have no data-flow edge — they frame the diagram rather than participate in it. But a consumption/app/state tile (`ai-bi-dashboard`, `databricks-apps`, `lakebase`, `genie`, `sql-lakehouse`, a model) is NOT global — it should be wired. This is the failure to watch for in wide multi-lane layouts: those tiles land far from the data they read and get left stranded. **Wiring is a design step, not an afterthought:** after placing tiles, trace the flow end-to-end — walk each source through the pipeline to a consumer/entry point and draw every hop. When a global/governing tile DOES draw an edge, it attaches to what it actually governs — `ai-gateway` to MODEL calls (`model-serving`, apps), `unity-catalog` to data — never chained through whatever tile happens to sit next to it.
 
 ## Designing the architecture from a request (architecture-first)
 
-Design a **coherent, functionally-complete architecture that solves the ask**, from **the user's request** (their prompt / pasted text) — not from any pre-existing file or default, not a literal word-for-word transcription, not a fixed template.
+Design a **coherent, functionally-complete architecture that solves the ask** from **the user's request** (their prompt / pasted text) — not from any pre-existing file or default, not a word-for-word transcription, not a fixed template.
+
+### Step 0 — READ THE REQUEST'S OWN STRUCTURE FIRST (do this before anything)
+
+The request usually TELLS you the shape. Extract it before you pick components:
+
+- **Does it list LAYERS / SECTIONS?** ("Layer 1 — ingestion, Layer 2 — governance, Layer 3 — intelligence, …", or numbered/bulleted sections.) → Use the **layered shape** (not the funnel), honoring the request's order and names. Layers often map to left→right lanes, but a layer→column mapping is a starting point, not a rule: a governance/cross-cutting layer usually SPANS the others (a pinned bar/band, not a lane), thin adjacent layers can share a lane, and a layer can run top→bottom. Choose the fewest lanes that keep the flow legible and the connected tiles near each other — many sparse lanes push consumers away from the data they read and leave them stranded. Do NOT collapse a rich multi-layer ask into the 5-tile funnel — that's the #1 failure mode. When the ask *doesn't* dictate its own order, a sane default spine is **sources → data processing → domain + governance → compute → ML / agentic → apps → Genie One** — a starting skeleton only; the ask's own structure and names always win. **Keep each layer coherent** — group same-role tiles into the same lane rather than scattering them (e.g. compute sits as one layer between data and the consumers). This is a preference, not a rule: a layered ask mentioning related tiles in different sentences isn't a reason to split them across lanes unless the ask actually wants them separated.
+- **Does it name EXTERNAL (non-Databricks) systems?** (AWS Lambda/Kinesis/S3, an existing app, a third-party bus, "keep X, add Databricks alongside".) → Draw the external side in its OWN boundary `box` and Databricks in ANOTHER; the gap between them is the **integration seam**. Show it **both ways** if the ask mentions callbacks/bi-directional (subscribe IN + call APIs back OUT). Use `file:cloud/<provider>/…` logos for the external side.
+- **Does it map future-state to current gaps, name reference customers, or carry other context?** → Those are **`type:"note"` post-its by default** (a `text`/`box` annotation only when you specifically want a plain caption or a titled badge), not core components — place them near what they describe (beside the relevant tile, or below/beside the diagram), just don't let them overlap or crowd the tiles.
+
+**Honor the structure the user handed you** — if they wrote the layers/sections, use those names and order.
+
+### Step 0.5 — where does the EXTRA CONTEXT go? (keep the diagram dense)
+
+A rich request carries far more detail than there are components. Don't drop it, and don't inflate the diagram with it — route each piece to the right lightweight slot, keeping every line **short** so the picture stays scannable:
+
+- **Context ABOUT a component** (what a source/domain/table holds, what a tile is for) → a **`desc`** line under it (title + one short subtitle, like "Lakebase" / "Managed Postgres for app state"). Works on catalog tiles (override only when the default can't say it), and on **`source`** and **`logo`** nodes (set `desc` + it shows; a logo desc is a muted 2nd caption line). **One tight phrase, not a sentence** — the tile stays compact and the layout reserves room for it. If it needs a paragraph, it's not a `desc`.
+- **Context from the REQUEST that isn't about any one component** (a rationale, a "keep X / we'll add Y", future-state wins, reference customers, an SLA, a caveat, a team/ownership fact) → a **VISIBLE `type:"note"` post-it, placed beside/below the component it relates to. This is the DEFAULT for request context** — if the user wrote it and it matters, it belongs on the canvas as a note, not compressed into a tile `desc` and NEVER parked in the hidden `ai_reasoning` field. **Lean toward MORE notes:** add one per distinct point rather than cramming several into one or dropping them. (Use a plain `text`/`box` annotation only for a genuine caption/badge; never invent a fake component.)
+- **Context about a CONNECTION** (why A feeds B, what flows, an order/step, a non-obvious hop) → a short **edge `label`** drawn ON the edge. Use it whenever the relationship isn't self-evident from position — but keep it to a few words ("Subscribe (streams)", "Query shared context", "Trigger APIs after decision") so edges stay legible and the diagram dense.
+- **Your OWN reasoning you want to keep but NOT show** (why you chose a handle, a "don't add X" caution, why a row/col) → the node/edge **`ai_reasoning`** field — it round-trips verbatim and never renders (see rule 10). This is ONLY for your authoring rationale, never for request content the user should see — that goes to a visible post-it above.
+
+The bar: every component and edge that isn't obvious gets a short label or `desc`; everything narrative goes to a note/annotation; nothing becomes a bogus tile, and no line runs long. Dense and self-explanatory beats sparse-but-cryptic or cluttered-with-paragraphs.
 
 ### Step 1 — which KIND of diagram is this?
 
-Decide this FIRST — it picks the whole vocabulary. Most asks are (1).
+Pick the shape that fits what Step 0 found. Most SINGLE-use-case asks are (1); a multi-layer / "alongside an existing stack" ask is (2).
 
-1. **Solution / demo architecture** — a left→right DATA-FLOW story: sources → pipeline → compute → dashboards/Genie/apps → user, on the governed platform. **The default.** This is what you draw for a use-case ("predictive maintenance", "customer 360") AND for a data+AI feature ask ("Lakeflow Connect + SDP → a model endpoint") — both are functional flows, they only differ in how much you infer (Step 2). Uses the catalog **tiles** + composites.
-2. **Physical / governance architecture** — the Unity Catalog HIERARCHY: workspace → metastore → catalogs → schemas → tables. A **containment** picture (nested boxes), NOT a flow. Trigger: the ask is about UC objects / org structure ("show our metastore, catalogs, schemas"). Use the container-box presets — see *Databricks physical layout* below. Do NOT draw the data-flow tiles for this.
-3. **Infra / networking architecture** — cloud/account topology: VPC / subnets / PrivateLink / cloud services. Also containment (nested cloud boxes, the *Containers* pattern), not a data flow. Trigger: the ask is about networking / deployment / cloud accounts.
+1. **Flow (solution / demo)** — a left→right DATA-FLOW story: a few sources (default ~4, see *Sources*) → Lakeflow+Genie → lakehouse/Lakebase → dashboard/Genie/app → Genie One → user. The common shape for ONE use-case ("predictive maintenance", "customer 360") or a data+AI feature ask ("Lakeflow Connect + SDP → a model endpoint"). Uses the catalog **tiles** + composites; how much to infer → Step 2; which reference(s) to learn from → *Pick a starting point*. **Layout conventions:** one `box` `wraps` the whole flow (usually not the raw sources) = "the Databricks Platform" (auto-renders behind its children — see *Containers*); `db-platform` + `governance-block` `pin` to its `top-left`/`top-right` (never a raw `at`); Genie One fronts the consumption tiles with auto-arrows.
+2. **Layered platform / integration** — the request is organized as **layers**, and/or Databricks sits **alongside an existing (non-Databricks) system**. The layers organize the diagram in the ask's order (usually lanes, but see Step 0 — governance spans, thin layers merge, pick the fewest legible lanes); external systems get their own **boundary box** with an **integration seam** to the Databricks boundary box; governance (Unity Catalog) SPANS the layers as a pinned top bar or full-height band, not one lane tile. Build it from the ask's actual layers (boundary boxes + seam + layers-as-columns). This is the shape for enterprise / "add Databricks to our stack" asks — do NOT reduce it to the funnel. **Logical DOMAINS / knowledge areas** (a "five-domain context", a shared semantic layer, a set of business subject areas any agent can query) → draw each as a `type:"logo"` with **`icon:"file:vendor/genie-ontology"`** (the Genie Ontology mark = logical domain / knowledge), wrapped in a `box` titled for the layer.
+3. **Physical / governance** — the Unity Catalog HIERARCHY: workspace → metastore → catalogs → schemas → tables. A **containment** picture (nested boxes), NOT a flow. Trigger: the ask is about UC objects / org structure. Use the container-box presets — see *Databricks physical layout* below.
+4. **Infra / networking** — cloud/account topology: VPC / subnets / PrivateLink. Also containment (nested cloud boxes, the *Containers* pattern). Trigger: the ask is about networking / deployment / cloud accounts.
 
-If the ask blends kinds (e.g. "the data flow, inside our VPC"), compose them — a flow diagram wrapped in infra boxes.
+If the ask blends kinds (e.g. "the layered flow, inside our VPC"), compose them.
 
 ### Step 2 — (solution/demo only) how much to infer
 
@@ -32,7 +77,43 @@ If the ask blends kinds (e.g. "the data flow, inside our VPC"), compose them —
 
 Either way, components that belong together, wired so the flow reads correctly, on the governed platform.
 
-**References are building blocks to COMPOSE, not templates to reproduce.** Most asks aren't one example — take the ML platform's serving lane, add the agent-bricks supervisor, drop the full-platform governance bar on top, swap the sources. Don't copy one reference wholesale unless the ask genuinely is that one shape. See **Pick a starting point** for what each offers.
+**Don't copy a reference verbatim — adapt it to THIS ask. References are for inspiration.** Read the reference(s) to learn the PATTERN (which components connect, how the layout/handles/pins work), then build a fresh diagram for THIS ask. **Read as many references as are relevant** — most real asks mix several: take the ML platform's serving lane, add the agent-bricks supervisor, drop the governance bar on top, wrap it in the layered shape's boundary boxes, swap the sources. Pick whichever references inform the ask, learn from each, and compose your own. A reference matches the ask 1:1 only rarely — even then, adapt it (names, sources, which components) rather than reproduce it. See **Pick a starting point** for what each offers.
+
+### Step 2.5 — pick how to draw the DATA / INGEST layer (3 ways)
+
+The bronze→silver→gold data layer can be drawn three ways. Pick by **what the story emphasizes** — don't default to one:
+
+1. **`lakeflow-genie-block` (or `lakeflow-block`) — the big unified block.** Shows the whole ingest story in ONE block: Connect · Zerobus · raw-file landing on the left rail, the SDP medallion (bronze→silver→gold), Delta/Iceberg, and (genie variant) a "Built with Genie Code" footer. **Use when ingestion IS part of the story** — you want to showcase how data lands + gets processed, all products in one tidy block. Optional `bronze_desc`/`silver_desc`/`gold_desc` params add a short caption under each layer.
+   ```json
+   { "id": "data", "type": "lakeflow-genie-block", "col": "pipeline",
+     "params": { "gold_desc": "Business marts + metrics" } }
+   ```
+2. **`medallion-table` — the simpler block.** Just bronze→silver→gold in one compact tile, no ingest rail. **Use when ingestion is NOT the focus** but you still need the medallion — especially when you want the **Feature Store / Metric Views** forks off gold (`params:{feature_store,metric_views}`, wired via `@out-fs`/`@out-mv`/`@out-gold`). Same `*_desc` layer-caption params.
+   ```json
+   { "id": "med", "type": "medallion-table", "col": "pipeline",
+     "params": { "feature_store": true, "metric_views": true } }
+   ```
+3. **DIY — compose it yourself.** When you want to go into DETAIL and list the actual tables: a `type:"box"` per layer (title `"Bronze"`/`"Silver"`/`"Gold"`) wrapping `type:"logo"` tiles (icon `bronzeLayer`/`silverLayer`/`goldLayer`, `text` = the table name). Tiles use `col`/`row` inside the box's column; each box needs no `col`/`pad`/size/`z` — it auto-sizes around its tiles (z is automatic — see *Containers*). Flow edges box→box. Optionally wrap all three in a **parent box** titled "Lakeflow Spark Declarative Pipelines" with the SDP logo (`titleIcon:"sdpBrand"`) — a box `titleIcon` accepts ANY icon-library key.
+   ```json
+   { "id": "b1", "type": "logo", "icon": "bronzeLayer", "text": "orders_raw",   "caption": "right", "col": "bronze", "row": 1 },
+   { "id": "b2", "type": "logo", "icon": "bronzeLayer", "text": "events_raw",   "caption": "right", "col": "bronze", "row": 2 },
+   { "id": "s1", "type": "logo", "icon": "silverLayer", "text": "orders",       "caption": "right", "col": "silver", "row": 1 },
+   { "id": "s2", "type": "logo", "icon": "silverLayer", "text": "events",       "caption": "right", "col": "silver", "row": 2 },
+   { "id": "g1", "type": "logo", "icon": "goldLayer",   "text": "customer_360", "caption": "right", "col": "gold",   "row": 1,
+     "ai_reasoning": "only add ai_reasoning when there's a real authoring choice to record — don't invent" },
+   { "id": "bronze-box", "type": "box", "title": "Bronze", "wraps": ["b1", "b2"] },
+   { "id": "silver-box", "type": "box", "title": "Silver", "wraps": ["s1", "s2"] },
+   { "id": "gold-box",   "type": "box", "title": "Gold",   "wraps": ["g1"] },
+   { "id": "sdp-box", "type": "box", "title": "Lakeflow Spark Declarative Pipelines", "titleIcon": "sdpBrand",
+     "wraps": ["bronze-box", "silver-box", "gold-box"], "pad": 28,
+     "ai_reasoning": "hidden rationale goes INLINE as an ai_reasoning field — the JSON has no // comments" },
+   { "id": "note-residency", "type": "note", "text": "PII stays in the EU region; owned by the Data Platform team.", "below": "sdp-box",  "gap": 32 },
+   { "id": "note-sla",       "type": "note", "text": "Data refreshed every 15 min · end-to-end latency ~2 min source→Gold.", "below": "gold-box", "gap": 32 },
+   { "id": "note-ownership", "type": "note", "text": "Gold layer owned by the data-insights team.", "rightOf": "note-sla", "gap": 24 }
+   ```
+   The block is **plain JSON — no `//` comments.** Anything you'd write as a comment about a node is either a visible caption (`desc`/`label`), a visible `type:"note"` post-it, or the invisible `ai_reasoning` field ON that node — never a `//` line. Edges for this block: `bronze-box@r → silver-box@l` and `silver-box@r → gold-box@l` (`flow: true`). Feed any of the three from the left with a few `source` tiles (vary them per demo) — into the ingest ports for option 1 (`@in-lakeflow-connect`/`@in-zerobus`/`@in-direct`), or into `@l` for options 2/3.
+
+   **Add AS MANY `type:"note"` post-its as the request has context for** — one per distinct piece of non-component context (a constraint, an SLA, residency, ownership, a "keep X / add Y" principle, a caveat). The example shows three; a rich prompt may warrant more. Don't cram several facts into one post-it, and don't drop context because there's no tile for it — that's exactly what post-its are for. (Visible post-it vs invisible `ai_reasoning` field: the distinction lives in *Step 0.5* — request narrative the user should see → `type:"note"`; your own hidden rationale → `ai_reasoning`.)
 
 ---
 
@@ -42,7 +123,7 @@ Either way, components that belong together, wired so the flow reads correctly, 
 The diagram is **one self-contained HTML file** with its JSON in an inline block. Steps:
 
 1. `cp renderer/architecture-viewer.html my-arch.html` (or `architecture-editor.html` for a browser-editable copy with Load/Download buttons).
-2. Replace the JSON inside `<script type="application/json" id="architecture">…</script>` with your array (schema below; plain JSON, no `//`). Start from **The format** below, or `reference/architecture-complete.jsonc` for the full platform.
+2. Replace the JSON inside `<script type="application/json" id="architecture">…</script>` with your array (schema below; plain JSON, no `//`). Learn the schema from **The format** below + the relevant `reference/*.jsonc` — then author your OWN diagram for the ask (don't paste a reference in whole).
 3. Open in any browser (no server), or render + read the PNG to iterate (below).
 
 **Render loop (do this every edit):**
@@ -59,73 +140,65 @@ node renderer/render-arch.mjs my-arch.html        # → my-arch.png
 
 ---
 
-## Pick a starting point
+## Pick a starting point and read trusted example
 
-Which reference each request style maps to (copy the closest — and remember these are building blocks to **compose**, per *Designing the architecture* above):
+Which reference(s) each request style maps to (most asks draw from more than one; see *Designing the architecture* above):
 
 | If the user wants… (example prompt) | Start / borrow from | Shows |
 |---|---|---|
-| A general **data + AI / analytics demo**, or a broad "governed platform / data platform" ask | `reference/architecture-complete.jsonc` — **the canonical demo (solution) architecture** | The full sources → Lakeflow+Genie → lakehouse/Lakebase → dashboard/Genie/app → Genie One shape, 2 tabs. This is the DEFAULT for a broad use-case, not an over-scoped extreme. |
+| A general **data + AI / analytics demo** on a single use-case, or a broad "governed platform / data platform" ask with no named layers | `reference/architecture-complete.jsonc` — a worked **flow** example | The full sources → Lakeflow+Genie → lakehouse/Lakebase → dashboard/Genie/app → Genie One flow. Extend it with what the use-case implies (Step 2). |
+| An **enterprise / layered** ask — organized as LAYERS, or "add Databricks ALONGSIDE our existing (AWS/other) stack", or naming an integration seam | *Step 1 shape #2* (no reference file — build from the ask) | Layers-as-columns + an external cloud **boundary box** (Kinesis/Lambda/S3…) beside a Databricks **boundary box**, a bi-directional integration seam, governance spanning the top. Use this the moment the ask has explicit layers or an external system — NOT the funnel. |
 | Anything **model-driven** — "predictive maintenance", "churn", "recommendations", "fraud", "ML platform" | `reference/ml-platform.jsonc` | `rowGrid` matrix, medallion Feature Store fork (`@out-fs`), Vector Search / RAG, model training → registry → real-time + batch serving. Predictive-maintenance-shaped. |
 | An **assistant / RAG / multi-agent** demo — "route questions across our data + docs + tools" | `reference/agent-bricks.jsonc` | Supervisor over Knowledge Assistant · Genie Agent · Hosted MCPs over a governed medallion → Genie One. |
 | A **minimal** "ingest → lakehouse → dashboard + Genie for the business" | *The format* inline example (below) | The smallest ingest → lakehouse → dashboard/Genie → Genie One flow. Use only when the ask is genuinely that small. |
 | A **physical / governance** layout — "show workspace, metastore, catalogs, schemas" | `reference/governance-layout.jsonc` (+ *Databricks physical layout* below) | Nested Workspace / Metastore / Catalog / Schema / Table boxes — a governance picture, not a data-flow one. |
 
+You can open multiple to compose them for trusted layout.
+
 ## The format
 
-The SIMPLEST shape — one tab. **Use it only for a basic ingest→serve demo**; for anything richer copy a reference above. Emit an array of tabs (`[ … ]`, see *Tabs*); shown as JSONC for the comments — **strip `//`** on emit (parsed as plain JSON):
+The example below is the **use-case starting point**: when the user types a plain USE-CASE with no named components or layers ("a customer-360 demo", "churn analytics for retail"), start from this funnel and **ADD the components that use-case requires** — a prediction story adds ML training → registry → serving; an assistant story adds a supervisor + Knowledge Assistant; a real-time story adds streaming ingest. A pattern to build ON, not a floor to reduce everything to. (When the ask NAMES layers or an external stack, it is NOT this shape — use the layered reference per Step 0/1.) It also teaches the JSON schema + edges/handles/pins. Emit an array of tabs (`[ … ]`, see *Tabs*). **Plain JSON — no `//` comments.** Any explanation lives INLINE as an `ai_reasoning` field on the node/edge it's about (never rendered, round-trips on save) — the example uses it to teach the schema, exactly as you'd document your own non-obvious choices:
 
-```jsonc
+```json
 {
   "name": "Customer 360",
   "story": "Ingest our Postgres, ERP, sensor, and PDF data into a governed lakehouse, then give the business a dashboard and a Genie Agent to ask questions in plain language — reached through Genie One, all on Databricks.",
   "columns": ["sources", "pipeline", "compute", "work", "entry"],
   "nodes": [
-    // Sources, each stacked by `row`. The edge (below) names the Lakeflow ingest
-    // PORT the source lands on — @in-lakeflow-connect (databases/SaaS),
-    // @in-zerobus (realtime/sensors), @in-direct (files: PDF/CSV/Parquet).
-    { "id": "src-postgres", "type": "source", "col": "sources", "row": 1, "label": "Postgres", "icon": "file:vendor/postgresql" },
-    // A source with NO logo → `icon:"text"` renders the label as a brand-colored
-    // text badge (no icon file). Use for niche / internal systems.
-    { "id": "src-erp", "type": "source", "col": "sources", "row": 2, "label": "Acme ERP", "icon": "text" },
-    // Realtime stream → @in-zerobus (its edge animates as a particle river).
-    { "id": "src-sensors", "type": "source", "col": "sources", "row": 3, "label": "Sensor data", "icon": "sensorSource" },
-    // Files → @in-direct (its edge animates as travelling document glyphs).
-    { "id": "src-docs", "type": "source", "col": "sources", "row": 4, "label": "PDF documents", "icon": "pdfLogo" },
-    // The one data-layer block (ingest + bronze→silver→gold, built by Genie Code).
-    { "id": "lakeflow-genie-block", "type": "lakeflow-genie-block", "col": "pipeline" },
-    { "id": "sql-lakehouse", "type": "sql-lakehouse", "col": "compute" },
-    // Consumption lane: dashboard + Genie, stacked.
+    { "id": "src-postgres", "type": "source", "col": "sources", "row": 1, "label": "Postgres", "icon": "file:vendor/postgresql",
+      "ai_reasoning": "sources stack by row; each source's edge (below) names the Lakeflow ingest PORT it lands on — that target handle drives BOTH the port anchor and the flow animation" },
+    { "id": "src-erp", "type": "source", "col": "sources", "row": 2, "label": "Acme ERP", "icon": "text",
+      "ai_reasoning": "no vendor logo for this internal ERP → icon:\"text\" draws the label as a brand-colored text badge (niche/internal systems)" },
+    { "id": "src-sensors", "type": "source", "col": "sources", "row": 3, "label": "Sensor data", "icon": "sensorSource",
+      "ai_reasoning": "realtime stream → its edge targets @in-zerobus (particle-river animation)" },
+    { "id": "src-docs", "type": "source", "col": "sources", "row": 4, "label": "PDF documents", "icon": "pdfLogo",
+      "ai_reasoning": "files → its edge targets @in-direct (travelling-docs animation)" },
+    { "id": "lakeflow-genie-block", "type": "lakeflow-genie-block", "col": "pipeline",
+      "ai_reasoning": "the one data-layer block: ingest + bronze→silver→gold, built by Genie Code" },
+    { "id": "sql-lakehouse", "type": "sql-lakehouse", "col": "compute",
+      "ai_reasoning": "governed serving copy; the consumption lane (dashboard + Genie) reads from here" },
     { "id": "ai-bi-dashboard", "type": "ai-bi-dashboard", "col": "work", "row": 1 },
     { "id": "genie", "type": "genie", "col": "work", "row": 2 },
-    // Genie One = the business-user entry point (an INTERFACE onto everything to
-    // its left). It has the "Business users" persona built IN (a pill above the
-    // tile) — no separate user node needed. It's wide, so ROTATE it 90° to stand
-    // vertically — a slim lane.
-    { "id": "genie-one", "type": "genie-one", "col": "entry", "rot": 90 },
-    // Top-band banners PINNED to the platform box's corners (never absolute `at` —
-    // those drift off-corner when the node set changes). A non-float pin RESERVES
-    // a top band so the box grows to enclose them. Both render with no border/shadow.
-    { "id": "db-platform", "type": "db-platform", "pin": { "at": "top-left", "to": "platform-box" } },
+    { "id": "genie-one", "type": "genie-one", "col": "entry", "rot": 90,
+      "ai_reasoning": "business-user entry point / interface onto everything to its left; persona pill built IN (no separate user node); rotated 90° into a slim lane; its edges auto-arrow (no flow/arrow needed)" },
+    { "id": "db-platform", "type": "db-platform", "pin": { "at": "top-left", "to": "platform-box" },
+      "ai_reasoning": "top-band banner PINNED to the box corner (never absolute at — those drift off-corner when the node set changes); a non-float pin RESERVES a top band so the box grows to enclose it" },
     { "id": "governance-block", "type": "governance-block", "pin": { "at": "top-right", "to": "platform-box" } },
-    // One white box wrapping the whole flow = "all of this is the platform".
-    { "id": "platform-box", "type": "box", "z": -1,
+    { "id": "platform-box", "type": "box",
+      "ai_reasoning": "one white box wrapping the whole flow = 'all of this is the platform'; no z needed — a wrapping box auto-renders behind its children (see Containers)",
       "wraps": ["src-postgres", "src-erp", "src-sensors", "src-docs", "lakeflow-genie-block", "sql-lakehouse", "ai-bi-dashboard", "genie", "genie-one"] }
   ],
   "edges": [
-    // Source → Lakeflow: name the ingest PORT on the target handle. That handle
-    // also drives the flow animation: @in-zerobus → particle stream, @in-direct →
-    // travelling docs, @in-lakeflow-connect (or any other source edge) → laser beam.
-    { "id": "e1", "from": "src-postgres", "to": "lakeflow-genie-block@in-lakeflow-connect", "flow": true },
+    { "id": "e1", "from": "src-postgres", "to": "lakeflow-genie-block@in-lakeflow-connect", "flow": true,
+      "ai_reasoning": "databases/SaaS land on @in-lakeflow-connect; naming the port on the target handle drives the port anchor AND the flow animation" },
     { "id": "e1b", "from": "src-erp", "to": "lakeflow-genie-block@in-lakeflow-connect", "flow": true },
     { "id": "e1c", "from": "src-sensors", "to": "lakeflow-genie-block@in-zerobus", "flow": true },
     { "id": "e1d", "from": "src-docs", "to": "lakeflow-genie-block@in-direct", "flow": true },
     { "id": "e2", "from": "lakeflow-genie-block", "to": "sql-lakehouse", "flow": true },
     { "id": "e3", "from": "sql-lakehouse", "to": "ai-bi-dashboard", "flow": true },
     { "id": "e4", "from": "sql-lakehouse", "to": "genie", "flow": true },
-    // Genie One fronts the consumption tiles (auto-arrow — Genie One edges point
-    // away from it toward the resource; no `flow`/`arrow` needed).
-    { "id": "e6", "from": "genie-one", "to": "ai-bi-dashboard" },
+    { "id": "e6", "from": "genie-one", "to": "ai-bi-dashboard",
+      "ai_reasoning": "Genie One fronts the consumption tiles; its edges auto-arrow away from it toward the resource" },
     { "id": "e7", "from": "genie-one", "to": "genie" }
   ]
 }
@@ -168,12 +241,12 @@ rowGrid: true                columns →   pipeline    ml            serving
 ```
 
 Rules under `rowGrid`:
-- **Band Y** = the row's line; **band height** = the tallest node in that row. Rows stack top→bottom, whole grid centered on y=0.
-- **`row` numbers are grid coordinates, not just order.** SKIP a number to insert an empty band of vertical space (rows `0,2,4` are more spread out than `0,1,2`) — the lever for opening room when edge labels between two rows collide.
+- **Rows sit on a FIXED PITCH** — row `N` lands on the same Y line in every column, so tiles across columns register into clean horizontal rows. The whole grid is centered on y=0.
+- **`row` numbers are grid coordinates, not just order.** SKIP a number to insert an empty row of vertical space (rows `0,2,4` are more spread out than `0,1,2`) — the lever for opening room when edge labels between two rows collide.
 - **No `row`** → that node falls back to stacking within its own `col` (e.g. leave the data sources row-less to just stack them).
 - **`at` / `alignY` / `below` / `above` still override** a node's grid position (per node).
 - **Line the source up with what it feeds** — give a source the SAME `row` as its target so the feed edge is a clean horizontal line (e.g. `src-pdf` and `knowledge-assistant` both on row 4; `src-postgres` and `medallion-table` both on row 3).
-- **A TALL node (medallion, agent-bricks, lakeflow blocks) makes its whole band taller** — so its row centers lower than short tiles sharing that row, and it widens the gap to adjacent rows. If that pushes things apart awkwardly, put the tall node on a row of its own (or use `alignY` to re-center a neighbor onto it) rather than fighting the band.
+- **A TALL node (medallion with forks, agent-bricks, lakeflow blocks) OVERFLOWS DOWNWARD in its OWN column** — it spans into the next cell's space without pushing other columns or inflating the shared row. So a short tile at the same `row` in another column stays put (no gap from the tall neighbor). Just don't place another node in this column on the row(s) the tall node overflows into, or they'll overlap — give the tall node room below it in its lane.
 
 ### Relational placement (place a node against another)
 
@@ -207,8 +280,8 @@ When a node's spot is best described *relative to another node* rather than by a
 ### A node
 | Field | Required | Description |
 |-------|----------|-------------|
-| `id` | Yes | Unique node id. For a 2nd placement of the same component use `genie#2` (the `#N` suffix). |
-| `type` | Yes | A **catalog component id** (`genie`, `sql-lakehouse`, `lakeflow-genie-block`, `governance-block`, `db-platform`, … — see the catalog below; this folds in the old composite "kind") OR a special kind: `source` · `box` · `text` · `logo` · `image`. |
+| `id` | Yes | Unique (per tab) free-form handle that `edges`/`wraps`/relational fields reference. Need NOT match `type` (`{id:"gold-medallion", type:"medallion-table"}` is fine). 2nd instance of a component: `type#2` or any unique id. |
+| `type` | Yes | The **catalog component id** — this is what identifies the component (label/icon/desc/ports resolve from it): `genie`, `sql-lakehouse`, `lakeflow-genie-block`, `governance-block`, `db-platform`, … (see the catalog below; folds in the old composite "kind") OR a special kind: `source` · `box` · `text` · `logo` · `image`. |
 | `col` | placement | The lane (from `columns`) this node sits in. Nodes in a lane stack vertically, centered. **Primary way to place a node.** |
 | `row` | No | Within-lane order (default), or a shared cross-lane band with `rowGrid: true` — see *Positioning* above. |
 | `wraps` | container | On a `type:"box"`: the node ids this box ENCLOSES. The box auto-sizes around them (+ `pad`, default 24). Nesting works (a box may wrap boxes) — see *Containers*. |
@@ -220,7 +293,7 @@ When a node's spot is best described *relative to another node* rather than by a
 | `rot` · `scale` · `z` · `pad` | No | Rotation° (0/90/180/270), content scale, stacking order (negative = behind), container padding. |
 | `group` | No | A shared string id stamped on several nodes → they form a GROUP: selecting one selects all, and they move together on the canvas. |
 | `label` · `icon` | No | Override the catalog default label/icon (only when it differs). **Exception — a `type:"source"` has NO catalog default, so it REQUIRES an explicit `label`** (omit it and the tile falls back to an ugly icon-derived name like "Pdflogo"). `icon` may be a built-in name, a `file:vendor/…`/`file:cloud/…` key, or a `custom:<id>` (see *Custom logos & images*). |
-| `note` | No | **Authoring note — NEVER rendered, never affects layout.** Free text explaining WHY this node is here or what a non-obvious choice means (a relabeled generic tile, why a `row`/`col` was picked, a param's effect). Round-trips verbatim (survives drags/saves). Distinct from `desc` (the visible line). Use it so an example stays self-documenting — see rule 10. |
+| `ai_reasoning` | No | **AI reasoning — NEVER rendered, never affects layout.** Free text explaining WHY this node is here or what a non-obvious choice means (a relabeled generic tile, why a `row`/`col` was picked, a param's effect). Round-trips verbatim (survives drags/saves). Distinct from `desc` (the visible line) and `type:"note"` (the visible post-it). For your own authoring rationale only — request content the user should see goes to a `type:"note"` post-it. Use it so an example stays self-documenting — see rule 10. |
 | `desc` | No | Description line under the label. **On a catalog component: OMIT it** — the catalog default (see the catalog table) renders and is the source of truth. Set `desc` ONLY to override that default with something the default can't say — e.g. a **relabeled** tile whose default no longer matches (`lakeflow-jobs`→"Batch Scoring Job", `model-serving#2`→"RAG Endpoint"). On a `source`/`logo` there's no catalog default, so `desc` is its only description (optional). `""` clears it. If you find yourself paraphrasing the default, delete the `desc` (or improve the default in code). |
 | `showDesc` | No | `true`/`false` to force the description line on/off. **Default:** a catalog tile shows its description when it has one; a `source`/`logo` shows it only when you set `desc`. |
 | `caption` | source · logo | Where the label sits relative to the icon: `right` · `left` · `top` · `bottom`. **Default:** `right` for a source, below (`bottom`) for a logo. |
@@ -231,17 +304,17 @@ When a node's spot is best described *relative to another node* rather than by a
 The **band** a component belongs to (which sets its tile color) is derived from its `type` — you never write it.
 
 ### An edge
-`{ "id"?, "from": "<srcId>[@handle]", "to": "<tgtId>[@handle]", "flow"?, "arrow"?, "dashed"?, "shape"?, "flowStyle"?, "centerX"?, "label"?, "note"? }`
+`{ "id"?, "from": "<srcId>[@handle]", "to": "<tgtId>[@handle]", "flow"?, "arrow"?, "dashed"?, "shape"?, "flowStyle"?, "centerX"?, "label"?, "ai_reasoning"? }`
 
 - **Write `from`/`to` by node id; the `@handle` is INFERRED** from geometry: left→right ⇒ source `@r` → target `@l`; vertical ⇒ `@b`/`@t`. A **source** feeding the Lakeflow block must name the target ingest port EXPLICITLY on the handle — `@in-lakeflow-connect` (databases/SaaS), `@in-zerobus` (realtime streams/sensors), or `@in-direct` (files: PDF/CSV/Parquet). That handle also picks the flow animation: `@in-zerobus` → particle stream, `@in-direct` → travelling docs, else → laser beam.
 - Add an explicit **`@handle`** only to override the inference — a composite port (`in-lakeflow-connect`, `in-zerobus`, `in-direct`, `r`) or a side (`l`/`r`/`t`/`b`). E.g. force a vertical link with `@b`/`@t`.
 - `flow: true` → animated "data flowing" line. Omit for a static line.
 - `arrow`: omit/`"auto"` (default — auto-draws an arrowhead for edges touching the **user persona** or **Genie One**) · `"none"` · `"end"` · `"start"` · `"both"`. An explicit arrow is a static relationship line.
 - `shape`: `smooth` (default) · `straight` · `step`. `flowStyle`: `dot`·`particles`·`docs`·`laser`.
-- `label` = text drawn ON the edge (short — it's rendered). `note` = an authoring note that is **NEVER rendered** — the *reasoning* for the edge (why it exists, why a handle was chosen, a "don't add X" caution). It round-trips verbatim, so use it to make an example self-explanatory. See rule 10.
+- `label` = text drawn ON the edge (short — it's rendered). `ai_reasoning` = **NEVER rendered** — the *reasoning* for the edge (why it exists, why a handle was chosen, a "don't add X" caution). It round-trips verbatim, so use it to make an example self-explanatory. See rule 10.
 
 ### Containers (wrapper boxes)
-A `type:"box"` with `wraps: [ids]` becomes a **labeled container** that auto-sizes to enclose those nodes (+ `pad`). It's how the big white **platform box** works (`wraps` the whole flow, `z:-1`). Nesting is recursive — model a cloud diagram by wrapping wrappers:
+A `type:"box"` with `wraps: [ids]` becomes a **labeled container** that auto-sizes to enclose those nodes (+ `pad`) and auto-renders behind them. It's how the big white **platform box** works (`wraps` the whole flow). Nesting is recursive — model a cloud diagram by wrapping wrappers:
 
 ```json
 { "id": "aws", "type": "box", "label": "AWS", "wraps": ["vpc"], "pad": 28 },
@@ -251,7 +324,7 @@ A `type:"box"` with `wraps: [ids]` becomes a **labeled container** that auto-siz
 { "id": "db",  "type": "lakebase", "col": "compute" }
 ```
 
-The inner nodes get placed (by `col` or `at`); each box sizes itself around its members, innermost first. You never compute a box's `at`/`size`. **Give nested boxes DESCENDING `z`** (outermost most-negative: `aws` `z:-3`, `vpc` `z:-2`, `subnet` `z:-1`) — a box is opaque and hides anything sharing its z, so an outer box without a lower z covers everything inside it.
+The inner nodes get placed (by `col` or `at`); each box sizes itself around its members, innermost first. You never compute a box's `at`/`size`. **Z is automatic** — a wrapping box renders behind its children and nesting deepens on its own (outer boxes drop further back), so you don't set `z` on the boxes above; a box's title/border still sits on top. (Set `z` only to deliberately override that ordering.)
 
 **Auto-seed — a box can arrange its own children.** A child that has NO placement of its own (`col`/`at`/relational) but is listed in a box's `wraps` is **auto-seeded**: it stacks vertically inside that box, in `wraps` order, centered on the box. So the minimal container is just `wraps` + nothing on the children — e.g. one Unity Catalog tile inside a Metastore needs no `col`. **Mixed boxes work**: if some wrapped children ARE placed (by `col`) and some are bare, the placed ones keep their lane and the bare ones stack BELOW them inside the box. (Prefer `col` when you have several siblings you want lined up in a specific order; lean on auto-seed for a lone child or a quick stack.)
 
@@ -265,11 +338,11 @@ For a **governance / physical** ask ("show our workspace, metastore, catalogs, s
 - **Workspace** / **Metastore** → `type:"box"` containers (`title` "Databricks Workspace" / "Databricks Metastore"; icons `file:vendor/databricks` / `databricksMetastore`).
 - **Catalog** / **Schema** / **Table** → `type:"logo"` marks (icons `dbCatalog` / `dbSchema` / `dbTable`) with a side caption.
 
-Nest by containment: Workspace `wraps` the Metastore, Metastore `wraps` Catalogs, a Catalog `wraps` its Schemas — same recursive `wraps` as the cloud example above. **Copy `reference/governance-layout.jsonc`** — it's the worked example.
+Nest by containment: Workspace `wraps` the Metastore, Metastore `wraps` Catalogs, a Catalog `wraps` its Schemas — same recursive `wraps` as the cloud example above. **See `reference/governance-layout.jsonc` for the worked pattern** — read it, then build your own for the actual catalogs/schemas.
 
 Two things that WILL bite if you author this from scratch (both in that reference):
 - **Placing the leaves.** Use `columns` (one lane per catalog) so sibling schemas line up in tidy per-catalog stacks, then the catalog box `wraps` them. You *can* also leave a leaf **bare** (no `col`/`at`) and let it auto-seed inside its box — good for a lone child (e.g. one Unity Catalog tile inside the Metastore); for several siblings a `col` reads cleaner. Either way the box sizes around them.
-- **Nested boxes need DESCENDING `z`.** A box is opaque and paints OVER whatever shares its z, so each level must sit BEHIND the one it contains: workspace `z:-3` < metastore `z:-2` < catalog `z:-1` < the leaf logos (default 0, on top). Omit this and only the outermost box shows. (Same rule for cloud/VPC nesting.)
+- **Nested-box stacking is automatic** (z — see *Containers*): each level renders behind the one it contains (workspace behind metastore behind catalog behind the leaf logos).
 
 ### Annotations (free-form, not catalog components)
 
@@ -310,7 +383,7 @@ The renderer gives each kind a different **default** chrome, so the same `style`
 | **logo** annotation | **none** | **none** | **transparent** | just the mark + caption, no box. Add `style.border`/`style.fill` to turn it INTO a boxed tile (a border/fill auto-adds a default shadow). |
 | **box** annotation | 1px | none | transparent (a `box` used as a plain rectangle is solid white; a `wraps` container is transparent) | labeled container. |
 | **text** annotation | none | none | none | bare text. |
-| composite (`lakeflow`, `governance`, `agent-bricks`, `db-platform`, …) | own internal chrome | varies | own | self-contained blocks; `db-platform`/`governance` default to no outer border. |
+| composite (`lakeflow`, `governance`, `agent-bricks`, `db-platform`, …) | own internal chrome | varies | own | self-contained blocks; `db-platform` defaults to no outer border, `governance` has a thin 1px border. |
 
 ### Custom logos & images
 
@@ -326,20 +399,9 @@ The renderer gives each kind a different **default** chrome, so the same `style`
 
 ---
 
-## The canonical end-to-end flow (the "complete" shape)
+## Component facts live in the catalog
 
-`reference/architecture-complete.jsonc` is the flagship layout — copy it and adapt. Left → right:
-
-```
-sources (≈3 rows)  →  Lakeflow + Genie (one block)  →  lakehouse + lakebase
-     →  dashboard + Genie Agent + app  →  Genie One  →  the end user
-```
-
-Per-component facts (title, `ports`/`@handle`s, composite internals, when-to-use) live in the generated **Component catalog** below — the single source of truth; read the row, don't restate it here. This section is only the whole-diagram layout:
-
-- **Platform box:** one `box` `z:-1` `wraps` the whole flow (usually not the raw sources) = "the Databricks Platform".
-- **Banners:** `db-platform` and `governance-block` `pin` to that box's `top-left`/`top-right` (never a raw `at` — it drifts when the node set changes; the non-float pin grows the box to fit).
-- **Genie One** fronts the consumption tiles (dashboard / Genie Agent / app) with auto-arrows.
+Per-component facts (title, `ports`/`@handle`s, composite internals, when-to-use) live in the generated **Component catalog** below — the single source of truth; read the row, don't restate it in a `desc`. (The per-shape layout — the flow's platform box + banners + Genie One, the layered shape's columns + boundary boxes, the governance shape's nested containment — lives with each shape in *Step 1* and its reference file.)
 
 ---
 
@@ -358,20 +420,30 @@ Use the `type` id; the renderer supplies the icon, label, default description an
 
 | type | default title | default description (shown on the tile) | size | when to use |
 |------|---------------|-----------------------------------------|------|-------------|
-| `lakeflow-block` | Lakeflow | One block: managed ingest (Lakeflow Connect), real-time streams (Zerobus) and direct file landing, all flowing into a declarative bronze → silver → gold pipeline. | 224×148 | The whole ingest + bronze→silver→gold SDP in one block (no Genie Code framing). Contains SDP — never add a separate sdp tile beside it. |
+| `lakeflow-block` | Lakeflow | One block: managed ingest (Lakeflow Connect), real-time streams (Zerobus) and direct file landing, all flowing into a declarative bronze → silver → gold pipeline. | 268×148 | The whole ingest + bronze→silver→gold SDP in one block (no Genie Code framing). Contains SDP — never add a separate sdp tile beside it. OPTIONS (params, all optional strings): `bronze_desc` / `silver_desc` / `gold_desc` — a SHORT caption under that layer's cylinder (e.g. `gold_desc:"Business marts + metrics"`); the block grows to fit. Keep each to a few words. |
 | | | | | **ports:** `in-lakeflow-connect` ← databases / SaaS apps · `in-zerobus` ← realtime streams / sensors · `in-direct` ← files: PDF / CSV / Parquet · `r` → the compute layer |
-| `lakeflow-genie-block` | Lakeflow + Genie | Lakeflow ingest + declarative pipeline, with Genie Code building and maintaining it — one box, end to end. | 360×208 | The PREFERRED data-layer block — ingest + bronze→silver→gold SDP, built/maintained by Genie Code. It IS the data layer; contains SDP + Genie Code, so never add separate sdp / genie-code tiles beside it. |
+| | | | | **wiring:** ingests from `sources (via @in-* ports)` · feeds gold tables to `sql-lakehouse` · syncs gold tables to `lakebase` |
+| `lakeflow-genie-block` | Lakeflow + Genie | Lakeflow ingest + declarative pipeline, with Genie Code building and maintaining it — one box, end to end. | 360×208 | The PREFERRED data-layer block — ingest + bronze→silver→gold SDP, built/maintained by Genie Code. It IS the data layer; contains SDP + Genie Code, so never add separate sdp / genie-code tiles beside it. OPTIONS (params, all optional strings): `bronze_desc` / `silver_desc` / `gold_desc` — a SHORT caption under that layer's cylinder; the block grows to fit. Keep each to a few words. |
 | | | | | **ports:** `in-lakeflow-connect` ← databases / SaaS apps · `in-zerobus` ← realtime streams / sensors · `in-direct` ← files: PDF / CSV / Parquet · `r` → the compute layer |
+| | | | | **wiring:** ingests from `sources (via @in-* ports)` · feeds gold tables to `sql-lakehouse` · syncs gold tables to `lakebase` |
 | `lakeflow-connect` | Lakeflow Connect | A few-click interface to connect and ingest data from 100+ sources — SaaS apps, databases, files and knowledge systems. | 230×54 |  |
+| | | | | **wiring:** ingests from `external connectors / SaaS / DBs` · lands raw tables into `sdp` |
 | `zerobus-ingest` | Lakeflow Zerobus | Real-time, direct ingest of streaming events into the lakehouse. | 230×54 |  |
+| | | | | **wiring:** receives push from `streaming / live events (apps, devices)` · lands raw tables into `sdp` |
 | `sdp` | Lakeflow SDP | Spark Declarative Pipelines — declarative bronze → silver → gold that self-heal and scale. | 230×112 |  |
+| | | | | **wiring:** reads ingested data from `lakeflow-connect` · reads streams from `zerobus-ingest` · reads files from (Auto Loader) `uc-volume` · orchestrated by `lakeflow-jobs` *(optional)* |
 | `uc-volume` | UC Volume | Governed file storage in Unity Catalog — where raw documents (PDFs) land. | 230×54 |  |
-| `lakeflow-jobs` | Lakeflow Jobs | Orchestrate the whole pipeline on a schedule or trigger. | 230×54 |  |
+| | | | | **wiring:** stores `files / documents (PDF, CSV, images)` |
+| `lakeflow-jobs` | Lakeflow Jobs | The orchestrator for any workflow — ingestion, SDP pipelines, notebooks, SQL queries, ML training/scoring, and deployment — on a schedule or trigger. | 230×54 | The workspace orchestrator. It can run ANY component as a task: data ingestion (Lakeflow Connect, notebooks, SDP), SQL queries, ML training/scoring, and deployment steps — chained with dependencies, on a schedule or trigger. Wire an `orchestrates` edge from Lakeflow Jobs to every step it runs. |
+| | | | | **wiring:** orchestrates `sdp` · orchestrates `ml-training-serving` · orchestrates `notebooks-eda` · orchestrates `lakeflow-connect` |
 | `notebooks-eda` | Notebooks | Interactive exploration and analysis on governed data. | 230×54 |  |
+| | | | | **wiring:** explores tables from `sdp` |
 | `delta-sharing` | Delta Sharing | Open, cross-org data sharing with no copies. | 230×54 |  |
 | `marketplace` | Marketplace | Discover and consume third-party data and AI assets. | 230×54 |  |
 | `lakebase` | Lakebase | Managed Postgres for app state — reads/writes the live queue. | 230×54 |  |
+| | | | | **wiring:** syncs with Delta — EITHER reverse-ETL Delta→Postgres, OR live app writes Postgres→Delta for analysis `sdp` · powers state + agent memory for `databricks-apps` · stores agent memory / task queue for `supervisor-agent` |
 | `sql-lakehouse` | Lakehouse | One copy of governed data for BI + AI — real-time queries at scale (SQL Warehouse; RT = Lakehouse Real Time). | 230×54 |  |
+| | | | | **wiring:** queries gold tables from `sdp` · serves queries to `ai-bi-dashboard` · serves queries to `genie` |
 
 ### Agentic Work `agentic-work`
 
@@ -380,29 +452,47 @@ Use the `type` id; the renderer supplies the icon, label, default description an
 | type | default title | default description (shown on the tile) | size | when to use |
 |------|---------------|-----------------------------------------|------|-------------|
 | `databricks-apps-work` | Databricks Apps | Deploy business apps | 230×54 | The custom business app — PREFERRED over the legacy databricks-apps tile. Runs on Lakebase; can embed the dashboard + Genie Agent. |
-| `genie-one` | Genie One - Mobile app | Databricks access for business user | 230×78 | The business-user / mobile entry point. It has a Business-users persona built IN (a small user icon docked above the Genie One mark) — so you do NOT need a separate file:persona/user node beside it. Wire Genie One --> dashboard / Genie Agent / app (auto-arrows; leave `arrow` out). |
+| | | | | **wiring:** reads/writes app state from `lakebase` · calls `supervisor-agent` *(optional)* · calls `model-serving` *(optional)* · model calls governed by `ai-gateway` *(optional)* |
+| `genie-one` | Genie One | The enterprise AI coworker — the simplified Databricks front door where business users reach dashboards, Genie, and apps without technical expertise (formerly Databricks One). | 230×78 | The business-user entry point / front door. It has a Business-users persona built IN (a small user icon docked above the Genie One mark) — so you do NOT need a separate file:persona/user node beside it. Wire Genie One --> dashboard / Genie Agent / app (auto-arrows; leave `arrow` out). |
+| | | | | **wiring:** fronts / opens `databricks-apps-work` · fronts / opens `genie` · fronts / opens `supervisor-agent` · fronts / opens `ai-bi-dashboard` · fronts / opens `lakewatch` *(optional)* · fronts / opens `customerlake` *(optional)* |
 | `genie` | Genie Agent | ask anything about your data | 230×54 |  |
+| | | | | **wiring:** runs governed SQL over `sql-lakehouse` · grounded in (semantics) `genie-ontology` *(optional)* · routed to by `supervisor-agent` *(optional)* |
 | `knowledge-assistant` | Knowledge Assistant | Chat with your documents — grounded, cited answers from unstructured content. | 230×54 |  |
-| `supervisor-agent` | Supervisor Agent | Routes a question to the right specialist agent and composes the answer. | 230×54 |  |
-| `agent-bricks` | Agent Bricks | Databricks' managed agents — a multi-agent supervisor plus information extraction, document parsing, and classification, built and governed for you. | 230×170 | Managed MULTI-agent system: a Supervisor orchestrating Knowledge Assistant / Genie / MCP / Functions (with extraction·parsing·classification chips). Use when the agent layer is a supervisor routing to specialists; if the demo uses only one agent capability, use that single tile instead. |
-| `ml-training-serving` | ML Models | Train, register, and serve models on governed data. | 230×54 |  |
+| | | | | **wiring:** reads documents from (RAG) `uc-volume` · routed to by `supervisor-agent` |
+| `supervisor-agent` | Supervisor Agent | Routes a question to the right specialist agent and composes the answer. | 230×54 | The Multi-Agent Supervisor (MAS) — routes to specialist agents/tools + composes the answer. It can orchestrate MANY types (up to 50): Genie · Knowledge Assistant · Model Serving endpoints · Unity Catalog functions/tables/volumes · Vector/AI Search index · published dashboards · MCP servers (external / UC / custom / Hosted MCPs) · web search · custom agents (Databricks Apps) · nested supervisors. Wire in the ones the demo actually uses. |
+| | | | | **wiring:** routes to `genie` · routes to `knowledge-assistant` · routes to (custom model) `model-serving` · calls tools via (MCP) `hosted-mcps` · queries (AI Search index) `vector-search` · queries (published dashboard) `ai-bi-dashboard` · reads files/tools from (UC function/table/volume) `uc-volume` · routes to (custom agent) `databricks-apps-work` · reads/writes agent memory + task queue from `lakebase` *(optional)* · grounded in (semantics) `genie-ontology` *(optional)* |
+| `agent-bricks` | Agent Bricks | Databricks' managed agents — a multi-agent supervisor plus information extraction, document parsing, and classification, built and governed for you. | 230×170 | The whole managed agent layer in ONE tile: a Supervisor with all its sub-capabilities inside it (Knowledge Assistant · Genie agent · MCP · Functions · classification · extraction · doc parsing). Input comes directly from a data source or from the lakehouse/medallion; output goes to an app, a Genie Space, or Genie One. USE THIS SINGLE TILE when the diagram is NOT centered on Agent Bricks — it keeps the overview simple, one block standing in for the entire agentic layer. But if the architecture IS ABOUT Agent Bricks (it's the focus), DON'T collapse it — SPLIT it into a `supervisor-agent` tile plus one tile per specialist (`knowledge-assistant`, `genie`, `hosted-mcps`, functions…), each wired separately, so the sub-agents are visible. |
+| | | | | **wiring:** reads governed data from `medallion-table` · linked to (Genie Space) `genie` *(optional)* · answers surfaced in `databricks-apps-work` *(optional)* · serves business users via `genie-one` *(optional)* · agent memory in `lakebase` *(optional)* · grounded in `genie-ontology` *(optional)* |
+| `ml-training-serving` | ML Models | Train, register, and serve models on governed data. | 230×54 | Two consumption patterns, same model: BATCH — score over Delta → a gold predictions table that dashboards/Genie/apps read (simplest, a good default); REAL-TIME endpoint when per-request scoring fits the story (fraud at auth, rec at page-load). Lean batch unless the demo needs live scoring. |
+| | | | | **wiring:** trains on gold features from `sdp` · trains on features from `feature-store` · batch predictions written back to a gold table of (default path) `sdp` · real-time endpoint called by `databricks-apps-work` *(optional)* |
 | `ml-model` | Machine Learning Model | A trained model on governed data — classification, forecasting, recommendations, and more. | 230×54 |  |
+| | | | | **wiring:** trains on gold features from `sdp` |
 | `model-training` | Model Training | Train + track experiments with MLflow — parameters, metrics, and artifacts, all governed. | 230×54 |  |
+| | | | | **wiring:** trains on gold features from `sdp` · trains on features from `feature-store` · registers trained model to `uc-model-registry` · feedback loop from `model-serving` |
 | `mlops` | MLOps | The full model lifecycle — train, evaluate, register, deploy, and monitor, governed end to end. | 230×54 |  |
 | `bronze-layer` | Bronze | Raw ingested data, landed as-is. | 230×54 |  |
 | `silver-layer` | Silver | Cleaned, conformed, deduplicated. | 230×54 |  |
 | `gold-layer` | Gold | Curated, business-ready aggregates. | 230×54 |  |
-| `medallion-table` | Medallion Table | Bronze → Silver → Gold in one block — the medallion refinement of a governed table. | 268×96 | The whole medallion (bronze → silver → gold) as ONE block, with the metal-toned layer marks and an internal flow. Prefer this over three separate bronze/silver/gold tiles when you just want to show the layered data itself. OPTIONS (params): `feature_store` and `metric_views` — each adds a fork off the GOLD layer (Feature Store above, Metric Views below) shown inside the block, and exposes an extra right-side OUTPUT handle so you can wire it: `@out-gold` (always), `@out-fs` (when feature_store), `@out-mv` (when metric_views). |
+| `medallion-table` | Medallion Table | Bronze → Silver → Gold in one block — the medallion refinement of a governed table. | 268×96 | The whole medallion (bronze → silver → gold) as ONE block, with the metal-toned layer marks and an internal flow. Prefer this over three separate bronze/silver/gold tiles when you just want to show the layered data itself. OPTIONS (params): `feature_store` and `metric_views` (booleans) — each adds a fork off the GOLD layer (Feature Store above, Metric Views below) shown inside the block, and exposes an extra right-side OUTPUT handle so you can wire it: `@out-gold` (always), `@out-fs` (when feature_store), `@out-mv` (when metric_views). Also `bronze_desc` / `silver_desc` / `gold_desc` (optional strings) — a SHORT caption under each layer (e.g. `gold_desc:"Business marts + metrics"`); the block grows to fit. Keep each to a few words. |
 | | | | | **ports:** `l` ← sources / ingest · `out-gold` → gold output · `out-fs` → feature store (when enabled) · `out-mv` → metric views (when enabled) |
+| | | | | **wiring:** reads raw data from `sources / ingest (@l)` · gold consumed by (@out-gold) `sql-lakehouse` · gold trains model (@out-gold / @out-fs) `model-serving` |
 | `feature-store` | Feature Store | Governed, reusable features for training and real-time serving — consistent offline and online. | 230×54 |  |
+| | | | | **wiring:** computes features from gold tables of `sdp` |
 | `uc-model-registry` | UC Model Registry | Version, stage, and govern models in Unity Catalog with full lineage. | 230×54 |  |
-| `model-serving` | Model Serving Endpoint | Serve a custom model behind a governed, autoscaling REST endpoint for real-time inference. | 230×54 | A deployed serving endpoint (real-time inference over a custom/registered model). Use when the demo calls a live endpoint; for the train→register→batch-score story use ml-training-serving instead. |
+| | | | | **wiring:** registers models from `model-training` · loads model into `model-serving` · loads model into (batch scoring) `lakeflow-jobs` |
+| `model-serving` | Model Serving Endpoint | Serve a custom model behind a governed, autoscaling REST endpoint for real-time inference. | 230×54 | A deployed serving endpoint (real-time inference over a custom/registered model). Best fit when the story needs per-request scoring (fraud at authorization, rec at page-load). For a plain train→register→batch-score story, batch is usually simpler — the model writes a gold predictions table (via ml-training-serving / the medallion) that dashboards/apps read; reach for a live endpoint when real-time matters. |
+| | | | | **wiring:** loads registered model from `uc-model-registry` · called for real-time predictions by `databricks-apps-work` *(optional)* · called by `supervisor-agent` *(optional)* |
 | `hosted-mcps` | Hosted MCPs | Managed MCP servers that let agents call external tools — Genie, Atlassian, GitHub, Slack, SharePoint, Gmail, and more. | 230×54 | The governed tool/connector layer for agents — hosted MCP servers (Genie / Atlassian / GitHub / Slack / SharePoint / Gmail …). Use when the demo's agent reaches OUT to external systems via MCP. |
-| `vector-search` | Vector Search | Embeddings | 230×54 |  |
+| | | | | **wiring:** exposes as tools `external tools (Genie, GitHub, Slack, …)` · tools called by `supervisor-agent` |
+| `vector-search` | Vector Search | Embeddings | 230×54 | Two build modes: (a) MANAGED — auto-sync an index FROM a Delta table (data must land in Delta first via sdp; easiest, higher latency); (b) STANDALONE — a direct index updated via a real-time API to add/remove entries (low latency). Pick the one the demo's freshness needs. |
+| | | | | **wiring:** auto-syncs index from a Delta table of (managed mode) `sdp` · direct add/remove entries (standalone mode, low-latency) `realtime API` · queried as AI Search index by (RAG) `supervisor-agent` |
 | `information-extraction` | Information Extraction | Pull specific data points, entities, and fields from unstructured text (ai_extract). | 230×54 |  |
+| | | | | **wiring:** reads unstructured text from `uc-volume` · orchestrated by `supervisor-agent` |
 | `document-parsing` | Document Parsing | Extract structured content from documents — text, tables, and metadata (ai_parse_document). | 230×54 |  |
-| `text-classification` | Text Classification | Categorize text into predefined or dynamic labels (ai_classify). | 230×54 |  |
-| `genie-code` | Built with Genie Code | A copilot for everyone — describe what you want and Genie Code builds the pipeline, dashboard or app for you, directly on Databricks. | 360×112 | Standalone 'describe it → Genie Code builds it' beat. Use only when NOT already using lakeflow-genie-block (which has the Genie Code footer built in). |
+| | | | | **wiring:** reads documents from `uc-volume` · orchestrated by `supervisor-agent` |
+| `text-classification` | Text Classification | Categorize text into predefined or dynamic labels (ai_classify). | 230×54 | Two typical shapes: (a) INLINE in the pipeline — a bi-directional arrow with `sdp` (enriches tables in place with ai_classify, usually drawn just below SDP); or (b) a STANDALONE job reading docs from a `uc-volume` and writing labels to a table. Pick per demo. |
+| | | | | **wiring:** enriches tables in-pipeline (bi-directional, ai_classify) `sdp` · standalone job reads docs from `uc-volume` · orchestrated by `supervisor-agent` |
+| `genie-code` | Built with Genie Code | Autonomous AI coding partner built into every Databricks surface (notebooks, pipelines, dashboards, MLflow) — Unity Catalog–aware, so it writes code against your real tables. | 360×112 | The 'built/maintained by Genie Code' beat — an AI coding partner for developers/practitioners (business users get the simpler no-code experience via Genie One). No need to add it separately when you're already using lakeflow-genie-block (that block has the Genie Code footer built in). |
 
 ### Agentic Apps `agentic-apps`
 
@@ -410,8 +500,14 @@ Use the `type` id; the renderer supplies the icon, label, default description an
 
 | type | default title | default description (shown on the tile) | size | when to use |
 |------|---------------|-----------------------------------------|------|-------------|
-| `databricks-apps` | Databricks Apps | Custom web app where the team does the work — queue, actions, all in one place. | 230×54 |  |
+| `databricks-apps` | Databricks Apps | Custom web app where the team does the work — queue, actions, all in one place. | 230×54 | LEGACY app tile — prefer `databricks-apps-work` for the custom business app. Kept for back-compat; use it only when an existing diagram already references it. |
+| | | | | **wiring:** reads/writes app state from `lakebase` · calls `supervisor-agent` *(optional)* · calls `model-serving` *(optional)* · model calls governed by `ai-gateway` *(optional)* |
 | `ai-bi-dashboard` | AI/BI Dashboard | Governed dashboards on the same data — one set of numbers, one page. | 230×54 |  |
+| | | | | **wiring:** queries (SQL Warehouse) `sql-lakehouse` *(optional)* |
+| `lakewatch` | LakeWatch | Agentic SIEM on the lakehouse — unify security logs + telemetry (OCSF), AI agents detect, investigate and respond at machine speed. | 230×54 | The security app: an agentic SIEM built ON the lakehouse. Use for security / SOC / threat-detection stories. Consumes governed telemetry from the data layer; SOC analysts + threat hunters use it. |
+| | | | | **wiring:** reads security logs + telemetry (OCSF) from `sdp` · opened by (SOC analysts) `genie-one` *(optional)* |
+| `customerlake` | CustomerLake | Agentic customer data platform embedded in Databricks — unify profiles into a Customer 360, run always-on campaigns, no data copies. | 230×54 | The marketing app: an agentic CDP on the lakehouse. Use for customer-360 / marketing / personalization / campaign stories. Consumes customer data from the data layer; marketers + analytics teams use it. |
+| | | | | **wiring:** builds Customer 360 from governed data of `sdp` · opened by (marketers) `genie-one` *(optional)* |
 
 ### Unified Governance `unified-governance`
 
@@ -419,10 +515,12 @@ Use the `type` id; the renderer supplies the icon, label, default description an
 
 | type | default title | default description (shown on the tile) | size | when to use |
 |------|---------------|-----------------------------------------|------|-------------|
-| `governance-block` | Unified Governance | One control plane for data + AI: Unity Catalog governs access, lineage and quality; the Unity AI Gateway governs every foundation-model call (OpenAI, Anthropic, Gemini, …); Genie Ontology is the shared semantic layer. | 580×108 | One governance bar: Unity Catalog + Unity AI Gateway (access any model) + a live Genie Ontology graph. Prefer over the loose unity-catalog / ai-gateway / data-quality / abac / data-classification tiles (use those only to spotlight one feature). |
-| `db-platform` | Databricks Platform | The Databricks Data + AI platform — one governed foundation for all data + AI. | 380×60 | Title banner (the Databricks wordmark). Pin it top-left, usually paired with a big background box (z:-1) wrapping everything → reads as 'all of this is the platform'. |
-| `unity-catalog` | Unity Catalog | One governed catalog — access, lineage, and semantics across data + AI. | 230×54 |  |
-| `ai-gateway` | Unity AI Gateway | Security, governance, cost and rate limits. | 240×104 | The Unity AI Gateway tile with a row of foundation-model logos (OpenAI · Anthropic · Gemini · Grok · Kimi) across the top — conveys 'govern + access ANY model' at a glance. Use standalone; the Unified Governance bar already embeds a compact gateway if you want the whole control plane. |
+| `governance-block` | Unified Governance | One control plane for data + AI: Unity Catalog governs access/lineage/audit (ACL · ABAC); the Unity AI Gateway governs every foundation-model call (OpenAI, Anthropic, Gemini, …); Genie Ontology is the shared semantic layer. | 570×92 | One governance bar with up to three surfaces: Access control (ACL · ABAC · Audit across Data + AI) + Unity AI Gateway (access any model) + Genie Ontology. Prefer over the loose unity-catalog / ai-gateway / data-quality / abac / data-classification tiles (use those only to spotlight one feature). OPTIONS (params, booleans, all default TRUE — set false to HIDE that surface): `access_control` / `ai_gateway` / `genie_ontology`; the bar tightens to the surfaces shown. Governance SPANS everything (data, jobs, dashboards, apps, end-user access…), so show it STRUCTURALLY — `pin` it as a bar across the top or bottom of the platform box; its position implies it governs all tiles under it, so draw NO per-tile edges. DEFAULT: the one-line spanning bar with NO edges — keep it low-touch, don't map it to every component. If a surface DOES need wiring, each shown one has a top+bottom handle (`@acl` / `@ai-gateway` / `@ontology`, + `-b`) and typically connects to: `@acl` → the DATA layer (medallion/lakehouse; the compute layer too if needed); `@ontology` → Genie (Genie Space / Genie agents); `@ai-gateway` → apps or model-serving (the frontier-model callers). Wire only the one or two that the story calls for, not all three. Any edge touching this block renders as a plain DASHED line with NO flow animation (governance governs, it doesn't flow data) — automatic, don't set `flow`/`dashed`. |
+| | | | | **ports:** `acl` ↑ access control (ACL · ABAC · Audit) · `acl-b` ↓ access control (bottom) · `ai-gateway` ↑ Unity AI Gateway · `ai-gateway-b` ↓ Unity AI Gateway (bottom) · `ontology` ↑ Genie Ontology · `ontology-b` ↓ Genie Ontology (bottom) |
+| `db-platform` | Databricks Platform | The Databricks Data + AI platform — one governed foundation for all data + AI. | 380×60 | Title banner (the Databricks wordmark). Pin it top-left, usually paired with a big background box wrapping everything (a wrapping box auto-renders behind its children — no z needed) → reads as 'all of this is the platform'. |
+| `unity-catalog` | Unity Catalog | One governed catalog — access, lineage, and semantics across data + AI. | 230×54 | Governs EVERYTHING — data, jobs, dashboards, apps, end-user access. So don't wire it to every tile (overkill/noise). Best default: the spanning governance bar (this tile or `governance-block`) pinned top/bottom of the platform box, NO edges — position implies it governs all. If you use the single tile with edges (to spotlight governance), link only the 1–2 MAIN anchors (e.g. the data layer, or end-user access), not everything. Follow the user if they ask to show it governing something specific. |
+| `ai-gateway` | Unity AI Gateway | Security, governance, cost and rate limits. | 240×104 | The Unity AI Gateway tile with a row of foundation-model logos (OpenAI · Anthropic · Gemini · Grok · Kimi) across the top — conveys 'govern + access ANY model' at a glance. Use standalone; the Unified Governance bar already embeds a compact gateway if you want the whole control plane. It governs the model calls that apps / model-serving endpoints make — wire it to whatever actually makes those calls (an app or model endpoint typically routes through it), labeled 'model calls governed by'. Keep that edge SHORT and adjacent to what it governs; don't drag the tile far away and route a long line across unrelated tiles (that reads as if the source 'calls the gateway' — the confusion to avoid). |
+| | | | | **wiring:** governs model calls of `databricks-apps-work` · governs `model-serving` |
 | `data-quality` | Data Quality | Expectations and monitors keep bad data out of the gold layer. | 230×54 |  |
 | `abac` | ABAC | Attribute-based access control — fine-grained, policy-driven permissions. | 230×54 |  |
 | `data-classification` | Data Classification | Automatically tag and govern sensitive data. | 230×54 |  |
@@ -432,9 +530,9 @@ Use the `type` id; the renderer supplies the icon, label, default description an
 <!-- END: generated-catalog -->
 
 ### Sources
-Use `type:"source"` with a vendor `icon` (`file:vendor/<name>` — e.g. `postgresql`, `kafka`, `sap`, `salesforce`, `shopify`). Generic fallbacks: `pdfLogo`, `csv`, `parquet`, `sensorSource`, `inputData`, `unstructuredData`. Wire the source's edge to the Lakeflow block's ingest port with an explicit handle — `@in-lakeflow-connect` (databases/SaaS), `@in-zerobus` (realtime/sensors), `@in-direct` (files: PDF/CSV/Parquet) — which sets both the port and the flow animation (zerobus→particles, direct→docs, else→laser). A custom shapes source: `file:vendor/custom-source`. A persona/user marker: `file:persona/user` (as a `logo` node).
+Use `type:"source"` with a vendor `icon` (`file:vendor/<name>` — e.g. `postgresql`, `kafka`, `sap`, `salesforce`, `shopify`). Generic fallbacks: `pdfLogo`, `csv`, `parquet`, `sensorSource`, `inputData`, `unstructuredData`. Wire the source's edge to the Lakeflow block's ingest port with an explicit `@in-*` handle (see *An edge*). A custom shapes source: `file:vendor/custom-source`. A persona/user marker: `file:persona/user` (as a `logo` node).
 
-Show **real, NAMED source systems** — never a single "Synthetic Data" / "synthetic" placeholder (it reads as fake and tells no story).
+Show **real, NAMED source systems** — avoid a single "Synthetic Data" / "synthetic" placeholder (it reads as fake and tells no story).
 - **Follow the user first:** if they named their sources (one or many), use exactly those.
 - **Default when you have no signal:** add **~4** plausible real systems with real vendor logos, spanning the three ingest ports so the Lakeflow block's three ports are used — e.g. a database (`postgresql`/`mysql`, edge `@in-lakeflow-connect`), a SaaS app (`salesforce`/`shopify`, `@in-lakeflow-connect`), **sensor / IoT data** (`sensorSource`, `@in-zerobus`), and documents (`pdfLogo`, `@in-direct`). Fit the industry if one is implied; otherwise this generic mix is fine. This is just the fallback — a demo that clearly wants one source should show one.
 - For the streaming/`zerobus` path lead with **sensor data**, NOT Kafka — Zerobus is Databricks' direct ingest that *replaces* a Kafka-style broker, so showing Kafka alongside it is contradictory.
@@ -467,18 +565,18 @@ Also: `file:persona/user` (a person — normally the business-user persona is bu
 ## Authoring rules
 
 1. **Prefer composites** (fewer nodes, richer): `lakeflow-genie-block` over `sdp`+`lakeflow-connect`; `governance-block` over the five loose governance tiles; `agent-bricks` for managed multi-agent. Never add a composite's sub-parts beside it (see each catalog `authoring` note).
-2. **Place by `col`/`row`, never invent pixels.** Banners (`db-platform`, `governance-block`) `pin` to the platform box's corners — an absolute `at` drifts off-corner the moment the node set changes.
-3. **Source → Lakeflow edge MUST name the ingest port** (not inferred): `@in-lakeflow-connect` (DB/SaaS) · `@in-zerobus` (realtime/sensor) · `@in-direct` (files). All other handles infer from geometry. That handle also picks the flow animation.
+2. **Place by `col`/`row`, not hand-picked pixels.** Banners (`db-platform`, `governance-block`) `pin` to the platform box's corners — an absolute `at` drifts off-corner the moment the node set changes.
+3. **Source → Lakeflow edge MUST name the ingest port** (`@in-lakeflow-connect`/`@in-zerobus`/`@in-direct`) — it's not inferred; all other handles infer from geometry. Full detail (which port for which source + its animation) in *An edge*.
 4. **Genie One / user edges: auto-arrow** — leave `arrow`/`flow` out. Data-flow edges: `flow: true`.
-5. **A repeated component needs `#N`** (`model-serving`, `model-serving#2`). A made-up id (`rag-endpoint`) re-keys to its type and silently collides.
+5. **`id` is a free-form handle; `type` is identity** (`{id:"rag-endpoint", type:"model-serving"}` is fine). Every `edges`/`wraps`/`below`/`pin.to` reference must resolve to an id that exists on the tab.
 6. **Crowded/unreadable edge labels → add vertical space.** Render, look: if labels between two rows collide, with `rowGrid` **skip a row number** (`0, 2` not `0, 1`) so an empty band opens for them; without it, bump the `below`/`above` `gap`. Prefer space over shrinking/dropping labels.
-7. **Explain non-obvious choices with `note`** (never rendered, round-trips): a relabeled tile (`lakeflow-jobs`→"Batch Scoring Job"), a deliberate omission ("features only, no gold→training"), why a handle/row was chosen. The `story` covers the overall arc; `note` covers the per-node/edge WHY so the next edit isn't a guess.
+7. **Record non-obvious choices in `ai_reasoning`** (per-node/edge hidden rationale — full rules in *Step 0.5* + the *A node* table): a relabeled tile, a deliberate omission, why a handle/row was chosen — so the next edit isn't a guess. Also where a **user's** non-obvious change belongs: if someone edits the diagram in a way the components don't explain (renamed a tile, an unusual edge, an intentionally orphaned component), capture the intent in `ai_reasoning` so it survives.
 
 ---
 
 ## Reference files
 
-The `reference/*.jsonc` examples are listed with when-to-use in **Pick a starting point** at the top — copy the closest, strip `//`, emit plain JSON. Each file's own header comment explains what it demonstrates.
+The `reference/*.jsonc` examples are listed with when-to-use in **Pick a starting point** at the top. Read the relevant one(s) for the pattern, then author your own (never copy — see Step 2). When you reuse a snippet, strip `//` and emit plain JSON. Each file's header comment explains what it demonstrates.
 <!-- BEGIN: local-render-files (stripped inside Solution Builder — renderer/ isn't shipped into a project) -->
 Local render helpers: `renderer/architecture-viewer.html` / `architecture-editor.html` (copy one, edit its inline JSON) · `renderer/render-arch.mjs` (`node renderer/render-arch.mjs <file>.html` → PNG).
 <!-- END: local-render-files -->

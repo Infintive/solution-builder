@@ -14,12 +14,13 @@ import { memo, useContext, useState, useEffect, useRef, Fragment, type ReactNode
 import { type NodeProps, useUpdateNodeInternals } from "@xyflow/react";
 import { BronzeLayerIcon, SilverLayerIcon, GoldLayerIcon, FeatureStoreBrandIcon, MetricViewsIcon } from "../../databricks-icons";
 import { RotatableCard, medallionSize, DropTargetContext, EditModeContext, cardStyle, ConnectionDot, dotsOn, type DotSpec, type NodeData } from "./shared";
+import { layerDescOf } from "@/lib/platform-architecture";
 
 // Metal tones. Bronze + Silver render inline; Gold is the LAST column (inline,
 // or the middle of the MV/Gold/FS stack when a fork option is on).
 const BRONZE_SILVER = [
-  { label: "Bronze", color: "#cd7f32", Icon: BronzeLayerIcon },
-  { label: "Silver", color: "#9ca3af", Icon: SilverLayerIcon },
+  { key: "bronze", label: "Bronze", color: "#cd7f32", Icon: BronzeLayerIcon },
+  { key: "silver", label: "Silver", color: "#9ca3af", Icon: SilverLayerIcon },
 ] as const;
 
 // A short internal flow line with three super-small shapes (square · circle ·
@@ -109,6 +110,28 @@ function StackRow({ Icon, label, color, handleId, editMode, on }: { Icon: (p: { 
   );
 }
 
+// One medallion layer column — the metal-toned mark, its name, and an optional
+// short caption line below (from a `*_desc` param). The caption is muted + width-
+// clamped to ~2 lines so it adds context without blowing up the block; the box
+// height is already reserved for it in `medallionSize`.
+function LayerColumn({ Icon, label, color, desc }: { Icon: (p: { className?: string; style?: React.CSSProperties }) => ReactNode; label: string; color: string; desc?: string }) {
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <Icon className="h-9 w-9 shrink-0" style={{ color }} />
+      <span className="text-[11px] font-semibold leading-none" style={{ color }}>{label}</span>
+      {desc && (
+        <span
+          className="mt-0.5 max-w-[92px] text-center text-[9px] leading-tight text-muted-foreground"
+          style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+          title={desc}
+        >
+          {desc}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /** Generic side anchors (source/target from any side): left, top, bottom always;
  *  the RIGHT `out-gold` anchor ONLY when NOT forked (a fork puts out-gold on its
  *  own row via a StackRow ConnectionDot). All float just outside the border like
@@ -131,6 +154,13 @@ export const MedallionBlock = memo(function MedallionBlock({ data, selected }: N
   const fs = !!d.params?.feature_store;
   const mv = !!d.params?.metric_views;
   const hasFork = fs || mv;
+  // Optional per-layer caption lines (from `bronze_desc`/`silver_desc`/`gold_desc`
+  // params). When any is set the block reserves extra height + spreads the layers
+  // (medallionSize matches), and each column draws its caption under the label.
+  const bronzeDesc = layerDescOf(d.params, "bronze");
+  const silverDesc = layerDescOf(d.params, "silver");
+  const goldDesc = layerDescOf(d.params, "gold");
+  const hasLayerDesc = !!(bronzeDesc || silverDesc || goldDesc);
   // The exposed handle SET changes with the fork options + rotation. ReactFlow
   // caches each node's handle positions (handleBounds); toggling an option would
   // otherwise leave edges anchored to a STALE position. Re-measure ONLY when the
@@ -216,15 +246,12 @@ export const MedallionBlock = memo(function MedallionBlock({ data, selected }: N
         style={card.style}
       >
         <div className="flex h-full w-full flex-col px-3 pb-2 pt-2" style={{ transform: "scale(var(--cs, 1))", transformOrigin: "center" }}>
-          <div className="flex min-h-0 flex-1 items-center justify-center gap-1">
-            {/* Bronze → Silver (icon + label stacked). */}
+          <div className={`flex min-h-0 flex-1 items-center justify-center ${hasLayerDesc ? "gap-2.5" : "gap-1"}`}>
+            {/* Bronze → Silver (icon + label + optional desc caption, stacked). */}
             {BRONZE_SILVER.map((l, i) => (
               <Fragment key={l.label}>
                 {i > 0 && <Connector />}
-                <div className="flex flex-col items-center gap-0.5">
-                  <l.Icon className="h-9 w-9 shrink-0" style={{ color: l.color }} />
-                  <span className="text-[11px] font-semibold leading-none" style={{ color: l.color }}>{l.label}</span>
-                </div>
+                <LayerColumn Icon={l.Icon} label={l.label} color={l.color} desc={l.key === "bronze" ? bronzeDesc : silverDesc} />
               </Fragment>
             ))}
             {/* Silver → (Gold | fork stack). A fan draws a line to EVERY row.
@@ -251,10 +278,7 @@ export const MedallionBlock = memo(function MedallionBlock({ data, selected }: N
                 {/* Non-fork Gold: the right-side `out-gold` anchor is provided by
                     MedallionPorts (a border-floating ConnectionDot), so this column
                     is purely visual. */}
-                <div className="flex flex-col items-center gap-0.5">
-                  <GoldLayerIcon className="h-9 w-9 shrink-0" style={{ color: "#d4a72c" }} />
-                  <span className="text-[11px] font-semibold leading-none" style={{ color: "#d4a72c" }}>Gold</span>
-                </div>
+                <LayerColumn Icon={GoldLayerIcon} label="Gold" color="#d4a72c" desc={goldDesc} />
               </>
             )}
           </div>

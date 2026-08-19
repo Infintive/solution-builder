@@ -31,15 +31,22 @@ export const ComponentNode = memo(function ComponentNode({ data, selected }: Nod
 
   const isSdp = c.id === "sdp";
   // A source tile can position its label + auto-fit; product tiles are fixed.
-  const isSource = !!d.sourceKey || baseId(d.nodeId).startsWith("src-");
+  const isSource = d.type === "source" || !!d.sourceKey || baseId(d.nodeId).startsWith("src-");
   const cap: CaptionPosition = isSource ? (d.sourceCaption ?? "right") : "right";
   const vertical = isSource && (cap === "top" || cap === "bottom");
 
   // Default box: sources with a vertical caption use the taller box (matches
   // nodeFootprint so the node box + edge anchors track the card); everything
-  // else uses the component's natural size.
+  // else uses the component's natural size. A captioned SOURCE in a same-lane
+  // group carries a DERIVED lane-uniform width (`d.laneW`, computeLayout step
+  // 2.5) so the grouped cards match + icons align — honor it over the natural
+  // 200 (a user resize `d.w`/`d.h` still wins, applied inside NodeCard).
   const nat = baseSize(c);
-  const defaultSize = vertical ? VERTICAL_SOURCE_SIZE : nat;
+  const defaultSize = vertical
+    ? VERTICAL_SOURCE_SIZE
+    : isSource && d.laneW
+      ? { w: d.laneW, h: nat.h }
+      : nat;
 
   // Icon: real logo, or a full-name brand badge when the logo is trademark-
   // gated and not enabled — OR when the node opts into a label-only text badge

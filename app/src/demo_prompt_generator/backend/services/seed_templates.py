@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -25,7 +26,7 @@ from typing import Optional
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from ..models import Template, TemplateScreenshot, TemplateStatus, utc_now
+from ..models import Template, TemplateScreenshot, TemplateStatus, TemplateType, utc_now
 from .file_sync import compress_content, compute_file_hash
 from .template_service import (
     _should_include_in_template,
@@ -43,13 +44,22 @@ SCREENSHOT_FILENAME = "template_screenshot.png"
 def _find_initial_templates_dir() -> Optional[Path]:
     """Locate the initial_templates/ directory.
 
-    Same path inside the wheel and the dev tree:
-    `demo_prompt_generator/initial_templates/` (wheel) or `<repo>/initial_templates/` (dev).
+    Deployed (Databricks Apps): templates ship as per-template zips (not in the
+    wheel — too big for the 10 MB export cap); start.sh unzips them on boot and
+    sets INITIAL_TEMPLATES_DIR. Dev: read `<repo>/initial_templates/` directly.
     A valid dir contains at least one seed folder (a subdir with a manifest.json).
     """
     def _valid(d: Path) -> bool:
         return d.exists() and any(True for _ in _discover_template_dirs(d))
 
+    # 1) Explicit runtime dir (deployed container — unzipped by start.sh).
+    env_dir = os.environ.get("INITIAL_TEMPLATES_DIR")
+    if env_dir:
+        d = Path(env_dir)
+        if _valid(d):
+            return d
+
+    # 2) Bundled inside the package (legacy / if ever shipped in the wheel again).
     bundled = Path(__file__).parent.parent.parent / "initial_templates"
     if _valid(bundled):
         return bundled
@@ -281,11 +291,14 @@ def seed_default_templates(engine: Engine, ws: "WorkspaceClient | None" = None) 
                 narrative = entry.get("narrative")
                 capabilities = rmeta.get("capabilities") or entry.get("capabilities", [])
                 capabilities_json = json.dumps(capabilities)
+                # Template kind (SOLUTION default / WORKSHOP / GENIE_WORKSHOP /
+                # ARCHITECTURE) from the manifest — drives the gallery tag + ?type= filter.
+                template_type = entry.get("template_type") or TemplateType.SOLUTION.value
                 # Metadata that, if changed, should trigger a re-seed even when files are identical.
                 meta = "|".join([
                     entry.get("name", ""), entry.get("industry", "") or "",
                     entry.get("customer", "") or "", short_description or "",
-                    narrative or "", capabilities_json,
+                    narrative or "", capabilities_json, template_type,
                 ])
 
                 # CHEAP skip check: stat-based signature vs the stored checksum.
@@ -327,6 +340,7 @@ def seed_default_templates(engine: Engine, ws: "WorkspaceClient | None" = None) 
                         capabilities=capabilities_json,
                         customer=entry.get("customer"),
                         official=True,
+                        template_type=template_type,
                         screenshot=screenshot,
                         content_checksum=checksum,
                         submitted_at=now,
@@ -345,6 +359,7 @@ def seed_default_templates(engine: Engine, ws: "WorkspaceClient | None" = None) 
                     existing.capabilities = capabilities_json
                     existing.customer = entry.get("customer")
                     existing.official = True
+                    existing.template_type = template_type
                     existing.screenshot = screenshot
                     existing.content_checksum = checksum
                     session.add(existing)

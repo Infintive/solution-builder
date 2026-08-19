@@ -147,7 +147,7 @@ print(f"SPIKE_PEAK:   {SPIKE_PEAK.date()}")
 try:
     spark  # noqa: F821
 except NameError:
-    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    spark = DatabricksSession.builder.profile(os.environ.get("DATABRICKS_CONFIG_PROFILE", "DEFAULT")).serverless(True).getOrCreate()
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
 # Raw parquet lands in a UC Volume — the landing zone the SDP silver reads via
 # read_files() (no bronze pass-through; silver reads the files directly). One

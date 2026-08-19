@@ -76,3 +76,20 @@ targets:
         # until telemetry is turned on.
         OTEL_TRACES_SAMPLER: always_on          # capture every request span (no sampling)
         OTEL_SERVICE_NAME: solution-builder-generator   # service label in the traces/metrics tables
+
+        # ── Scale to remote workspaces (Preview) — OPTIONAL ───────────────────
+        # Leave these UNSET for the default single-workspace behavior (the app
+        # deploys generated demos into its OWN workspace; nothing below applies).
+        # Uncomment them to let ONE shared app deploy demos into OTHER remote
+        # workspaces you choose — see "Scale one app across many workspaces" in
+        # the root README. Requires the Cross-Workspace Network Policy account
+        # preview enabled on every target account.
+        #
+        # OAuth-M2M creds for a deployer SP you create in the target account;
+        # setting BOTH turns the scale feature on. Keep the SECRET out of git —
+        # prefer a Databricks secret scope reference over an inline value.
+        # DEPLOYER_SP_CLIENT_ID: <deployer-sp-client-id>
+        # DEPLOYER_SP_CLIENT_SECRET: <deployer-sp-client-secret>
+        # Optional — pre-fills the deploy-target control for new projects
+        # (blank = the app's own workspace).
+        # DEFAULT_TARGET_WORKSPACE_HOST: https://<your-target-workspace>.cloud.databricks.com

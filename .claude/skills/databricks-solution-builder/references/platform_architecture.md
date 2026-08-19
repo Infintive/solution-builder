@@ -17,7 +17,7 @@ This reference shows how ALL Databricks capabilities connect. Most demos use a s
 | `marketplace` | Databricks Marketplace | No | Subscribe to third-party datasets, AI models, solution accelerators, and native partner Apps | Subscribes to marketplace providers |
 | **Compute — Infrastructure that runs workloads** |||||
 | `serverless-compute` | Serverless Compute | No | On-demand compute for notebooks, ML training. No cluster management | Powers `sdp`, `ml-training-serving`, notebooks |
-| `sql-warehouse` | Lakehouse (SQL Warehouse) | No | Serverless data warehouse (Photon). "Lakehouse" is the current name for the SQL Warehouse — the two are used interchangeably | Powers `ai-bi-dashboard`, `genie` |
+| `sql-warehouse` | Lakehouse (SQL Warehouse) | No | Serverless SQL compute (Photon) for BI + ad-hoc SQL over governed lakehouse tables. Databricks now surfaces this as the "Lakehouse" in the product UI (the compute behind dashboards + Genie) | Powers `ai-bi-dashboard`, `genie` |
 | `lakehouse-rt` | Lakehouse Real Time (SQL Warehouse on Reyden) | No | The real-time SQL Warehouse, powered by the **Reyden** engine: millisecond queries (sub-100ms at ~12,000 q/s) directly on Delta/Iceberg — no separate serving layer, no data movement | Real-time serving for `ai-bi-dashboard`, apps, agents |
 | `classic-compute` | Classic Compute | No | Traditional clusters with manual sizing. Legacy — prefer `serverless-compute` | Legacy alternative |
 | **Data Processing — Transform raw data into analytics-ready tables** |||||
@@ -46,7 +46,7 @@ This reference shows how ALL Databricks capabilities connect. Most demos use a s
 | `lakebase` | Lakebase | Yes | Serverless Postgres for operational workloads + the agent system of record of choice. OLTP workloads, low latency, high throughput. Instant stop/start, git-style database branching, instant backup & restore | Syncs with `sdp` tables, powers apps + agent memory |
 | `databricks-apps` | Databricks Apps | Yes | Serverless app runtime (Streamlit, Gradio, Dash, React). SSO + UC governance | Leverages `lakebase`, `ml-training-serving`, `supervisor-agent` |
 | `app-builder` | App Builder | No | The no/low-code experience for building Databricks Apps faster | Produces `databricks-apps` |
-| `lakewatch` | LakeWatch | No | Agentic SIEM on the lakehouse — unifies security/IT/business telemetry (open OCSF schema) in one governed environment; security agents automate rule authoring/normalization/triage; sub-second detection | Consumes governed telemetry |
+| `lakewatch` | LakeWatch | No | Agentic SIEM on the lakehouse — unifies security/IT/business telemetry (open OCSF schema) in one governed environment; security agents automate rule authoring/normalization/triage; sub-second detection | Ingests high-volume security/telemetry logs (identity, endpoint, network) into UC-governed tables; feeds SOC detection + threat hunting |
 | `customer-lake` | CustomerLake | No | Agentic CDP embedded in Databricks — Profile Agents build Customer-360 "Golden Context", Campaign Agents run always-on "Infinity Campaigns"; governed by Unity Catalog | Built on the lakehouse |
 | **Orchestration — Run everything in production with reliability** |||||
 | `lakeflow-jobs` | Lakeflow Jobs | Yes | Native orchestrator: multi-task workflows, retries, file/table triggers, cost controls | Orchestrates `sdp`, `notebooks-eda`, `ml-training-serving` jobs |

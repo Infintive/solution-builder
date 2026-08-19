@@ -23,8 +23,17 @@ from ..core.auth import (
     detect_mode,
     request_user_pat,
     resolve_host,
+    target_deploy_active,
     write_project_auth_file,
+    write_project_databrickscfg,
 )
+# Cross-workspace deploy target resolution lives in the OPTIONAL remote_deploy/
+# module. Tolerant import so a generic build (module excluded) still boots; the
+# deploy path then resolves no target and stays same-workspace.
+try:
+    from ..remote_deploy import user_target as _user_target
+except ImportError:
+    _user_target = None
 from ..services.skills_manager import get_project_directory
 from ..models import (
     InvokeAgentRequest,
@@ -156,9 +165,26 @@ async def invoke_agent(
                     "industry": tpl.industry,
                     "capabilities": caps,
                 }
-        return project, databricks_profile, template_lineage
+        # Deploy target — PER-PROJECT PINNED (frozen at first deploy). Resolved
+        # while the session is live so the background task can use it after the
+        # request session closes. On a project's first deploy it's still unpinned
+        # here (the driver-gate below pins it inside the lock); resolve_project_target
+        # falls back to the live per-user setting in that case, and to the pin on
+        # every subsequent turn — so an account-setting change never redirects an
+        # already-started project.
+        effective_target = (
+            _user_target.resolve_project_target(
+                project=project,
+                user_email=user_email,
+                session=session,
+                config=config,
+            )
+            if _user_target is not None
+            else None
+        )
+        return project, databricks_profile, template_lineage, effective_target
 
-    project, databricks_profile, template_lineage = await asyncio.to_thread(_load_initial)
+    project, databricks_profile, template_lineage, effective_target = await asyncio.to_thread(_load_initial)
 
     manager = get_stream_manager()
 
@@ -206,20 +232,54 @@ async def invoke_agent(
                 if mode == "deployed":
                     pat = request_user_pat(headers)
                     host = resolve_host(headers)
-                    if pat and host:
-                        try:
-                            write_project_auth_file(
-                                get_project_directory(body.project_id), host, pat
-                            )
-                        except Exception:
-                            logger.exception(
-                                "failed to refresh .databrickscfg for project %s",
+                    # Deploy target is PINNED per-project: frozen at first deploy,
+                    # immutable after. resolve_project_target returns the project's
+                    # pinned host if set, else the live per-user setting (first
+                    # deploy / legacy). We then FREEZE it onto the project so any
+                    # later account-setting change can't redirect THIS project's
+                    # future turns (the mid-build target-swap bug).
+                    proj_for_target = session.get(Project, body.project_id)
+                    if _user_target is not None:
+                        # LEGACY GUARD: a project that already has built resources
+                        # but no pinned target is a pre-Model-3 project — its
+                        # resources live on the app's OWN workspace. Detect that
+                        # (cheap DB+JSON check) so the target resolves to the
+                        # app-own host instead of the user's live remote pick.
+                        # Shared resolve-AND-pin: we're the driver here (inside the
+                        # claim block) so can_pin=True — this is the authoritative
+                        # freeze point that the tile + .databrickscfg readers honor.
+                        has_built = _user_target.project_has_built_resources(
+                            request.app.state.file_sync, body.project_id, session=session
+                        )
+                        target_host = _user_target.resolve_and_pin_project_target(
+                            project=proj_for_target,
+                            user_email=user_email,
+                            session=session,
+                            config=config,
+                            has_built_resources=has_built,
+                            can_pin=True,
+                        )
+                    else:
+                        target_host = None  # generic build — always same-workspace
+                    try:
+                        wrote = write_project_databrickscfg(
+                            get_project_directory(body.project_id),
+                            config=config,
+                            target_workspace_host=target_host,
+                            user_pat=pat,
+                            user_host=host,
+                        )
+                        if wrote is None and pat:
+                            logger.warning(
+                                "invoke_agent in deployed mode but no .databrickscfg "
+                                "written (no resolvable host / missing target creds) "
+                                "for project %s",
                                 body.project_id,
                             )
-                    elif pat:
-                        logger.warning(
-                            "invoke_agent in deployed mode without resolvable host — "
-                            ".databrickscfg not refreshed"
+                    except Exception:
+                        logger.exception(
+                            "failed to refresh .databrickscfg for project %s",
+                            body.project_id,
                         )
                 return
 
@@ -301,6 +361,9 @@ async def invoke_agent(
                     session_id=effective_session_id,
                     template_lineage=template_lineage,
                     operator_notice=handoff_notice,
+                    target_deploy=target_deploy_active(
+                        config, effective_target
+                    ),
                 ):
                     collected_events.append(event)
             except asyncio.CancelledError:

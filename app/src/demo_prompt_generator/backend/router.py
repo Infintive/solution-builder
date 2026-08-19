@@ -23,6 +23,8 @@ from .routes import stats as _stats  # noqa: E402, F401  # /api/stats — admin 
 from .routes import uploads as _uploads  # noqa: E402, F401  # /api/uploads/extract — home-page file upload
 from .routes import brands as _brands  # noqa: E402, F401  # /api/brands/resolve — company brand (logo + palette)
 from .routes import collab as _collab  # noqa: E402, F401  # /api/projects/{id}/collab — live multi-user architecture editing (WS)
+from .routes import architecture_history as _architecture_history  # noqa: E402, F401  # /api/projects/{id}/architecture-history — arch-tab History panel
+from .routes import grounding as _grounding  # noqa: E402, F401  # /api/grounding/analyze — real-UC-schema vs story gap analysis
 
 
 @router.get("/health", operation_id="health")

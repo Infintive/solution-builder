@@ -150,7 +150,7 @@ Format: `# TODO(client-handoff): verify <X> still works for client_catalog/schem
 
 #### 3.6 — (removed in v1.1)
 
-v1's `setup` bundle target is gone in v1.1. The skill install machinery is now the 3-line CLI snippet in Step 8's README template. Stage 5 must NOT emit a `setup` target, `resources/setup.yml`, or `src/setup/install_skill.py` — if you're writing any of those, you're on the v1 path. (DAB v1.1.0 doesn't support `${resources.jobs.<key>}` self-reference, so the v1 setup target inherited all bundle resources and failed at terraform apply on placeholder values — observed on FEVM 2026-06-02.)
+v1's `setup` bundle target is gone in v1.1. The skill install machinery is now the 3-line CLI snippet in Step 8's README template. Stage 5 must NOT emit a `setup` target, `resources/setup.yml`, or `src/setup/install_skill.py` — if you're writing any of those, you're on the v1 path. (DAB v1.1.0 doesn't support `${resources.jobs.<key>}` self-reference, so the v1 setup target inherited all bundle resources and failed at terraform apply on placeholder values — observed 2026-06-02.)
 
 ### Step 4 — Rewrite `dab_instructions.md` for the client
 

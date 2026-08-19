@@ -55,6 +55,23 @@ fi
 
 export PATH="$DBCLI_DIR:$PATH"
 
+# ── Seed templates ──────────────────────────────────────────────────────────
+# initial_templates/ is NOT in the wheel (~5 MB — over the 10 MB export cap).
+# build.sh zips each template into .build/initial_templates_zips/<slug>.zip and
+# databricks.yml syncs that dir. IMPORTANT: the Databricks workspace import
+# AUTO-EXPANDS .zip files on upload — so in the deployed container they arrive
+# as already-unzipped folders (initial_templates_zips/<slug>/...), NOT .zip
+# files. So there's nothing to unzip: just point the seeder at that dir.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATES_DIR="$SCRIPT_DIR/initial_templates_zips"
+if [[ -d "$TEMPLATES_DIR" ]]; then
+    export INITIAL_TEMPLATES_DIR="$TEMPLATES_DIR"
+    _n=$(find "$TEMPLATES_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+    echo "[start.sh] Seed templates: $_n folder(s) at $TEMPLATES_DIR (INITIAL_TEMPLATES_DIR)"
+else
+    echo "[start.sh] No initial_templates_zips/ found — seeding will fall back to any bundled dir." >&2
+fi
+
 # ── jq ────────────────────────────────────────────────────────────────────
 # Apps containers don't ship jq either, but the solution-builder skills tell the
 # agent to pipe `databricks ... -o json | jq -r .field`. Without jq those

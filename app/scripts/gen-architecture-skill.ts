@@ -82,6 +82,15 @@ function renderCatalog(): string {
           .join(" · ");
         lines.push(`| | | | | **ports:** ${ports} |`);
       }
+      // Typical WIRING — what this component consumes/depends on, so the agent
+      // draws realistic edges. A plain entry is the normal/typical wiring;
+      // *(optional)* marks an edge to add only when the story calls for it.
+      if (c.wiring && c.wiring.length) {
+        const w = c.wiring
+          .map((r) => `${esc(r.action ?? "reads from")} \`${esc(r.from)}\`${r.optional ? " *(optional)*" : ""}`)
+          .join(" · ");
+        lines.push(`| | | | | **wiring:** ${w} |`);
+      }
     }
     lines.push("");
   }

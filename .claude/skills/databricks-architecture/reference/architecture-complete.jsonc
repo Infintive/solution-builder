@@ -37,10 +37,8 @@
 //   (all bronze→silver→gold) — do NOT add separate sdp / genie-code nodes.
 //
 // TABS: the top level is a JSON ARRAY — each element is one tab (its `name` is
-// the tab label). This file has two: the full end-to-end platform, then a small
-// "Serving layer" tab showing the standard single-row compute/serving tiles
-// (Lakehouse · Lakebase · Model Serving · Hosted MCPs) that share ONE default
-// footprint so a column of them lines up.
+// the tab label). This file has one: the full end-to-end platform flow. (Emit
+// more tabs in the array when a diagram needs multiple views.)
 // =============================================================================
 [
 {
@@ -82,9 +80,14 @@
     // and the banners drift off-corner). A non-float pin also RESERVES a top
     // band — the box grows to enclose the banners, so it reads as the outer
     // frame around governance ("all of this is the platform").
-    // db-platform + governance-block render with NO border/shadow by default.
-    { "id": "db-platform",      "type": "db-platform",      "pin": { "at": "top-left",  "to": "platform-box" }, "desc": "The Databricks Data + AI platform — one governed foundation for all data + AI."},
-    { "id": "governance-block", "type": "governance-block", "pin": { "at": "top-right", "to": "platform-box" }, "desc": "Unity Catalog governs access, lineage and quality across every table — one control plane for data + AI." },
+    // db-platform renders with no border/shadow; the governance bar has a thin
+    // 1px border. The governance bar spans the three governed surfaces
+    // (access-control · Genie Ontology · AI Gateway) — pin it as a full-width bar
+    // (here bottom). DEFAULT is one bar with NO edges; below we wire a FEW
+    // surface handles just to demonstrate them (@acl→data, @ontology→Genie,
+    // @ai-gateway→apps). Edges touching it auto-render dashed + no-flow.
+    { "id": "db-platform",      "type": "db-platform",      "pin": { "at": "top-left", "to": "platform-box" }, "desc": "The Databricks Data + AI platform — one governed foundation for all data + AI."},
+    { "id": "governance-block", "type": "governance-block", "pin": { "at": "bottom",   "to": "platform-box" }, "desc": "Unity Catalog governs access, lineage and quality across every table — one control plane for data + AI." },
 
     // The big white "platform" box — auto-sized to WRAP the whole flow (z:-1).
     // (A box shows a 1px border by default; set style.border to change it.)
@@ -112,25 +115,14 @@
     // the arrowhead pointing OUT toward each resource.
     { "id": "e12", "from": "genie-one", "to": "genie" },
     { "id": "e13", "from": "genie-one", "to": "ai-bi-dashboard" },
-    { "id": "e14", "from": "genie-one", "to": "databricks-apps-work" }
+    { "id": "e14", "from": "genie-one", "to": "databricks-apps-work" },
+    // Governance surfaces wired to what they typically govern (a FEW, not all —
+    // the default is no edges). Each auto-renders dashed + no-flow, so don't set
+    // `flow`/`dashed`: @acl → the data layer, @ontology → Genie, @ai-gateway →
+    // the app (frontier-model calls).
+    { "id": "e-gov-acl",     "from": "governance-block@acl",        "to": "lakeflow-genie-block@b",   "label": "Secure access" },
+    { "id": "e-gov-ontology","from": "governance-block@ontology",   "to": "genie@l",                  "label": "access enterprise context" },
+    { "id": "e-gov-gateway", "from": "governance-block@ai-gateway", "to": "databricks-apps-work@b",   "label": "Access & govern all frontier models" }
   ]
-},
-{
-  // Second tab — the standard compute / serving tiles. They carry NO explicit
-  // `size`; each falls to the shared 230×54 default (see naturalSize), so a
-  // single `serving` column lines them up with no hand-tuning.
-  "name": "Serving layer",
-  "columns": ["serving"],
-  "nodes": [
-    { "id": "sql-lakehouse",     "type": "sql-lakehouse",     "col": "serving", "row": 1 },
-    { "id": "lakebase",      "type": "lakebase",      "col": "serving", "row": 2 },
-    { "id": "model-serving", "type": "model-serving", "col": "serving", "row": 3 },
-    { "id": "hosted-mcps",   "type": "hosted-mcps",   "col": "serving", "row": 4 },
-    // A wrapper box around the four tiles: a `type:"box"` node that `wraps` the
-    // child ids. It auto-sizes to enclose them (+ `pad`); `z:-1` puts it behind.
-    { "id": "serving-box", "type": "box", "title": "Serving layer",
-      "wraps": ["sql-lakehouse", "lakebase", "model-serving", "hosted-mcps"], "pad": 28, "z": -1 }
-  ],
-  "edges": []
 }
 ]

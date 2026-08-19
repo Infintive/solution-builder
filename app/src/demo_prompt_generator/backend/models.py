@@ -104,6 +104,12 @@ _CAPABILITY_RESOURCE_KEYS: dict[str, list[str]] = {
     # pipeline_id wrongly showed "Not built yet" for every no-SDP demo.
     "synthetic-data-gen": ["pipeline_id", "catalog", "schema"],
     "lakeflow-connect": ["pipeline_id"],
+    # Surface the demo's catalog/schema as a first-class "Unity Catalog" tile
+    # (the frontend maps deployed_type=catalog_explorer → a TARGET-host Catalog
+    # Explorer link that _build_deployed_links already produces). Without this,
+    # catalog+schema were present in resources.json but rendered only as a small
+    # footer button, never a resource tile — so "the data doesn't show up".
+    "unity-catalog": ["catalog", "schema"],
     "aibi-dashboards": ["dashboard_id"],
     "genie": ["genie_space_id"],
     "knowledge-assistant": ["knowledge_assistant_id", "knowledge_assistant_endpoint"],
@@ -138,11 +144,12 @@ def capability_build_status(resources_json_text: str) -> list["CapabilityBuildSt
     Returns one entry per `capabilities.buildable` slug that maps to a
     deployable resource (has an entry in `_CAPABILITY_RESOURCE_KEYS`); each is
     `built=True` once ANY of its required keys is present + non-empty anywhere
-    in the JSON tree. Slugs with no required keys (talking-track, `unity-catalog`,
-    unknown-to-us) are OMITTED — they aren't buildable resources, so they never
-    count toward the meter (this is what the frontend used to express via its
-    `HIDDEN_SLUGS` set). NOT streaming-gated, so it's valid to read live as keys
-    land during a build.
+    in the JSON tree. Slugs with no required keys (talking-track, unknown-to-us)
+    are OMITTED — they aren't buildable resources, so they never count toward the
+    meter (this is what the frontend used to express via its `HIDDEN_SLUGS` set).
+    NOTE: `unity-catalog` + `synthetic-data-gen` now key off catalog+schema so the
+    demo's data surfaces as a built tile (the target-host Catalog Explorer link).
+    NOT streaming-gated, so it's valid to read live as keys land during a build.
 
     Conservative on parse failure / missing manifest: returns [] (no basis to
     report per-capability status).
@@ -310,6 +317,24 @@ class TemplateStatus(str, Enum):
     REJECTED = "REJECTED"
 
 
+class TemplateType(str, Enum):
+    """What KIND of template this is — drives gallery treatment + filtering.
+
+    - SOLUTION: a full, ready-to-deploy demo (the default; every user-published
+      template and every non-workshop seed).
+    - WORKSHOP: a training starting point — data generator + specs + a bootstrap
+      app the trainee builds out (the Tech Summit FY27 AI Customer Challenge
+      templates). NOT everything is pre-implemented.
+    - GENIE_WORKSHOP: a Genie-Code workshop — the trainee builds the resources
+      live in notebooks via Genie Code prompts.
+    - ARCHITECTURE: an architecture diagram only (no build), for the arch-first flow.
+    """
+    SOLUTION = "SOLUTION"
+    WORKSHOP = "WORKSHOP"
+    GENIE_WORKSHOP = "GENIE_WORKSHOP"
+    ARCHITECTURE = "ARCHITECTURE"
+
+
 # ---------------------------------------------------------------------------
 # SQLModel tables
 # ---------------------------------------------------------------------------
@@ -376,6 +401,27 @@ class Project(SQLModel, table=True):
     # workshop: the agent generates notebooks + data-gen + context instead of
     # provisioning resources). Drives which Build fork the agent takes.
     mode: str = SQLField(default="story", max_length=20)
+
+    # Cross-workspace deploy (Option A): the TARGET workspace this
+    # project's Databricks resources deploy INTO (an https workspace URL).
+    # Null = deploy to the app's OWN
+    # host workspace via the classic OBO path (unchanged behavior). When set
+    # (and the deployer SP is configured), the agent's .databrickscfg points at
+    # this host with the deployer-SP OAuth-M2M creds. See core/auth.py
+    # write_project_sp_auth_file + AUTH.md.
+    target_workspace_host: Optional[str] = SQLField(default=None, max_length=255)
+
+    # Cross-workspace ownership reconcile (Option A): SHA-256 of the resource
+    # set the last SP→user ownership-reconcile pass ran against (keyed to the
+    # target user). Lets the reconcile skip re-running when nothing changed —
+    # steady-state project opens cost one hash comparison, zero Databricks API
+    # calls. Null = never reconciled. See remote_deploy/ownership_reconcile.py.
+    ownership_reconciled_hash: Optional[str] = SQLField(default=None, max_length=64)
+    # Companion to the above for the MID-BUILD grant-only pass (CUJ1): the hash
+    # of the resource set the last grant-only reconcile ran against. Separate
+    # latch so the mid-build grants and the build-complete ownership transfer
+    # don't shadow each other's hash gate. Null = no mid-build grants yet.
+    ownership_granted_hash: Optional[str] = SQLField(default=None, max_length=64)
 
     # Skills config (JSON array of skill names)
     skills: str = SQLField(default="[]", sa_column=Column(Text))
@@ -526,6 +572,45 @@ class ProjectFile(SQLModel, table=True):
     )
 
 
+class ArchitectureHistory(SQLModel, table=True):
+    """One versioned snapshot of a project's `architecture.md`.
+
+    Every change to `architecture.md` (via the save route OR the file watcher)
+    records a snapshot of the full file, compressed with zstd (see
+    file_sync.compress_content). Writes are DEBOUNCED (1 min) and old entries are
+    COMPACTED to one per 5-min bucket (see services/architecture_history.py). The
+    history panel lists these top-to-bottom and can restore a version.
+
+    RESTORE entries (`is_restore=True`) are special: a restore always INSERTS a
+    fresh row (never debounce-upserts) and compaction NEVER deletes a restore row
+    NOR the row it was restored from (`restored_from_id`) — so a restore is always
+    undoable and nothing around a restore point is ever lost.
+    """
+    __tablename__ = "architecture_history"
+
+    id: Optional[int] = SQLField(default=None, primary_key=True)
+    project_id: str = SQLField(
+        sa_column=Column(
+            String(50),
+            index=True,
+            nullable=False,
+        )
+    )
+    # Full architecture.md content, compressed (zstd; decompress_content auto-detects).
+    content_compressed: bytes = SQLField(sa_column=Column(LargeBinary, nullable=False))
+    created_at: datetime = SQLField(default_factory=utc_now)
+    # True when this snapshot was created by RESTORING an earlier version (a
+    # protected entry — never compacted away).
+    is_restore: bool = SQLField(default=False, nullable=False)
+    # When is_restore, the id of the snapshot that was restored from (also
+    # protected from compaction, so both ends of a restore survive).
+    restored_from_id: Optional[int] = SQLField(default=None)
+
+    __table_args__ = (
+        Index("ix_architecture_history_project_created", "project_id", "created_at"),
+    )
+
+
 class BrandCacheEntry(SQLModel, table=True):
     """One resolved company brand, keyed by its canonical domain. Holds the
     expensive artifacts (palette + logo bytes + site screenshot) so a repeat
@@ -658,6 +743,11 @@ class Template(SQLModel, table=True):
     # Curated "official" templates (seeded from initial_templates/). Shown with a
     # featured treatment + surfaced on the internal /internal-demos gallery.
     official: bool = SQLField(default=False, index=True)
+    # What kind of template: SOLUTION (default, full demo) / WORKSHOP /
+    # GENIE_WORKSHOP / ARCHITECTURE. Read from the seed manifest.json
+    # (`template_type`); user-published templates default to SOLUTION (or derive
+    # from the source project's `mode`). Drives the gallery tag + the ?type= filter.
+    template_type: str = SQLField(default=TemplateType.SOLUTION.value, max_length=20, index=True)
     # Optional hero screenshot (PNG bytes) for the gallery tile + slide-over.
     screenshot: Optional[bytes] = SQLField(default=None, sa_column=Column(LargeBinary))
     # Hash of the seeded folder's file-set — lets the startup seeder skip unchanged
@@ -724,6 +814,24 @@ class TemplateContent(SQLModel, table=True):
 # ---------------------------------------------------------------------------
 
 
+class ArchitectureHistoryOut(BaseModel):
+    """One architecture-history snapshot (metadata only — no content blob).
+
+    Powers the arch-tab History panel list. Content is fetched lazily per entry
+    via the /content endpoint so the list stays cheap.
+    """
+    id: int
+    created_at: datetime
+    is_restore: bool = False
+
+
+class ArchitectureHistoryContentOut(BaseModel):
+    """The decompressed `architecture.md` markdown for one history snapshot."""
+    id: int
+    created_at: datetime
+    content: str
+
+
 class UploadedFile(BaseModel):
     """One file uploaded via the home-page widget.
 
@@ -744,6 +852,40 @@ class UploadedFile(BaseModel):
             "re-open the original."
         ),
     )
+
+
+class DiscoveryFit(BaseModel):
+    """Per-idea data-fit rating the grounded suggest LLM produced (how well the
+    user's REAL selected tables support the idea)."""
+
+    tier: str = Field(..., description="Great | Good | Possible")
+    reason: str = Field("", description="One clause naming the real cols/joins the idea uses (or its limitation).")
+
+
+class DiscoveryIdea(BaseModel):
+    """A use-case idea the discovery step surfaced (the chosen one, or an
+    alternative the user set aside)."""
+
+    title: str
+    hook: str = ""
+    why: Optional[str] = Field(None, description="Business-value rationale shown when the idea is expanded.")
+    fit: Optional[DiscoveryFit] = None
+
+
+class DiscoveryAnalysis(BaseModel):
+    """What the "Use existing data" discovery step LEARNED before the project
+    existed — the chosen use-case + its data-fit rationale, the alternatives it
+    surfaced, and the capability reasoning. Persisted verbatim to
+    specifications/data-discovery.md so the build agent INHERITS the analysis
+    instead of re-deriving (and possibly contradicting) it, and so it survives
+    context compaction. Same durability pattern as context/source-brief.md."""
+
+    chosen: Optional[DiscoveryIdea] = Field(None, description="The use-case the user picked to build.")
+    alternatives: list[DiscoveryIdea] = Field(
+        default_factory=list,
+        description="Other ideas the LLM proposed but the user did NOT pick — recorded so the agent won't re-explore them.",
+    )
+    reasoning: Optional[str] = Field(None, description="The LLM's summary of how the real tables flow through the selected capabilities.")
 
 
 class ProjectCreateRequest(BaseModel):
@@ -773,6 +915,19 @@ class ProjectCreateRequest(BaseModel):
         None,
         description="Opening chat message. Persisted as a user Message on the new project so it survives refresh and renders before the agent replies.",
     )
+    source_brief: Optional[str] = Field(
+        None,
+        description=(
+            "The user's RAW typed/pasted brief, verbatim and unwrapped (no "
+            "'Help me build…' framing, no capability line, no brand/kickoff "
+            "appendix). When it's substantial (a real pasted specification, "
+            "not a one-line topic) it's written verbatim to "
+            "context/source-brief.md so the build agent has a durable, "
+            "lossless copy of the user's intent that survives context "
+            "compaction — the skill treats it as the authoritative source "
+            "rather than re-grounding on its own compressed README."
+        ),
+    )
     architecture_first: bool = Field(
         False,
         description="Architecture-first project: opens on the Architecture tab and shows the 'Build the solution' CTA until the build is kicked off.",
@@ -790,6 +945,75 @@ class ProjectCreateRequest(BaseModel):
         "story",
         description="Home-page entry mode: 'story', 'architecture', or 'workshop' (Genie Code workshop — agent generates notebooks instead of provisioning resources).",
     )
+    grounding_tables: list[str] = Field(
+        default_factory=list,
+        description=(
+            "\"Use existing data\": fully-qualified real Unity Catalog tables "
+            "(catalog.schema.table) the user picked to build the demo on, "
+            "READ-ONLY. Every component (dashboards, Genie, metric views) queries "
+            "these exact tables in place — no synthetic data is generated, the "
+            "tables are not copied, and they are never written to or modified. "
+            "When non-empty, the create handler writes these tables' schema + "
+            "stats/sample rows to specifications/source-tables.md — the durable "
+            "record the build agent uses to derive a use case and point every "
+            "component at the real tables. Only meaningful for mode='story'."
+        ),
+    )
+    allow_data_write: bool = Field(
+        False,
+        description=(
+            "\"Use existing data\" opt-in: when False (default) the grounded demo "
+            "is READ-ONLY analytics on the real tables — write-needing capabilities "
+            "(synthetic-data-gen, sdp/ingest, apps, lakebase, ml training) are "
+            "dropped. When True the demo MAY create its OWN auxiliary tables (in the "
+            "demo's own catalog/schema) so those capabilities work; the user's real "
+            "tables in grounding_tables stay strictly read-only either way. Only "
+            "meaningful when grounding_tables is non-empty."
+        ),
+    )
+    discovery: Optional[DiscoveryAnalysis] = Field(
+        None,
+        description=(
+            "\"Use existing data\": the analysis the discovery step (scan + "
+            "grounded suggest) produced — the chosen use-case + its data-fit "
+            "rationale, the alternatives it surfaced, and the capability "
+            "reasoning. When present (and grounding_tables is non-empty) the "
+            "create handler writes it to specifications/data-discovery.md so the "
+            "build agent inherits what the LLM already learned instead of "
+            "re-deriving it. Only meaningful for a grounded mode='story' project."
+        ),
+    )
+
+
+class GroundingScanRequest(BaseModel):
+    """Request to scan real UC tables (schema + light stats + sample rows).
+
+    Warms the process-level stats cache the suggest endpoint reads from, so the
+    proposed story can be grounded in the actual tables.
+    """
+
+    tables: list[str] = Field(
+        default_factory=list,
+        description="Fully-qualified tables (catalog.schema.table) to scan.",
+    )
+
+
+class GroundingScannedTable(BaseModel):
+    """Light per-table result of a scan (no data leaves in this summary)."""
+
+    full_name: str
+    row_count: Optional[int] = None
+    column_count: int = 0
+    sampled: int = 0
+    error: Optional[str] = None
+
+
+class GroundingScanResult(BaseModel):
+    """Summary the UI shows after a scan — the full stats live server-side."""
+
+    scanned: list[GroundingScannedTable] = []
+    warehouse_id: Optional[str] = None
+    warehouse_name: Optional[str] = None
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -800,6 +1024,42 @@ class ProjectUpdateRequest(BaseModel):
     customer: Optional[str] = None
     # Flipped to False when the user builds the solution from the architecture.
     architecture_first: Optional[bool] = None
+    # Cross-workspace deploy target (Option A): the workspace URL this
+    # project's resources deploy INTO. "" or null clears it (→ deploy to the
+    # app's own host workspace). Only takes effect when the deployer SP is
+    # configured server-side (DEPLOYER_SP_CLIENT_ID/SECRET).
+    target_workspace_host: Optional[str] = None
+
+
+class TargetValidateRequest(BaseModel):
+    """Request to validate a cross-workspace deploy target (v1). The host is a
+    workspace URL the user pasted / picked; validation runs as the deployer SP."""
+    target_workspace_host: str
+
+
+class TargetValidateResponse(BaseModel):
+    """Verdict for a candidate deploy target, rendered by the UI. `status` is
+    one of: ready | out_of_account | needs_admin | region_unsupported |
+    region_unknown. See remote_deploy/probe.py."""
+    host: str
+    reachable: bool
+    is_admin: bool
+    region: Optional[str] = None
+    catalog: Optional[str] = None
+    status: str
+    can_deploy: bool
+    message: str
+    # When status == needs_admin, everything the user needs to add the deployer
+    # SP as a workspace admin themselves: its display name + application (client)
+    # ID (the value the workspace "Add service principal" UI asks for) + a deep
+    # link to that workspace's Identity settings. `admin_instructions` is a
+    # ready-to-show step list (includes the "you must already be a workspace
+    # admin on this workspace" prerequisite).
+    deployer_sp_name: Optional[str] = None
+    deployer_sp_application_id: Optional[str] = None
+    admin_settings_url: Optional[str] = None
+    admin_instructions: Optional[str] = None
+
 
 
 class ProjectProvisionRequest(BaseModel):
@@ -898,6 +1158,10 @@ class ProjectOut(BaseModel):
     warehouse_name: Optional[str] = None
     default_catalog: Optional[str] = None
     default_schema: Optional[str] = None
+    # Cross-workspace deploy target (Option A). Null = deploy to the app's own
+    # host workspace (classic). Set = deploy INTO this workspace as the
+    # deployer SP. Surfaced so the UI can show/edit the current target.
+    target_workspace_host: Optional[str] = None
     # Template lineage
     source_template_id: Optional[str] = None
     source_template_name: Optional[str] = None
@@ -1221,6 +1485,7 @@ class TemplateListItem(BaseModel):
     customer: Optional[str] = None  # Customer the source demo was built for
     capabilities: Optional[list[str]] = None  # Parsed from JSON
     official: bool = False  # Curated/seeded template (featured treatment)
+    template_type: str = TemplateType.SOLUTION.value  # SOLUTION / WORKSHOP / GENIE_WORKSHOP / ARCHITECTURE
     has_screenshot: bool = False  # Whether a hero screenshot is available (GET .../screenshot)
     # Total gallery images (hero + extras). 0 = none, 1 = hero only, >1 = carousel.
     screenshot_count: int = 0
@@ -1242,6 +1507,7 @@ class TemplateDetail(BaseModel):
     customer: Optional[str] = None  # Customer the source demo was built for
     capabilities: Optional[list[str]] = None
     official: bool = False
+    template_type: str = TemplateType.SOLUTION.value  # SOLUTION / WORKSHOP / GENIE_WORKSHOP / ARCHITECTURE
     has_screenshot: bool = False
     # Total gallery images (hero + extras). 0 = none, 1 = hero only, >1 = carousel.
     screenshot_count: int = 0
@@ -1358,6 +1624,57 @@ class ConfigStatus(BaseModel):
     # Source: ENABLE_LOGO_BY_DEFAULT env (false in the public build; true on
     # our internal Databricks deploys). See AppConfig.enable_logo_by_default.
     enable_logo_by_default: bool = False
+
+
+class UserSettings(SQLModel, table=True):
+    """Per-user account settings that apply across ALL of a user's projects.
+
+    Keyed by email and UPSERTED — deployed mode never persists a `users` row
+    (identity comes from the x-forwarded-email header), so this table is the
+    durable per-user store. Currently holds the cross-workspace deploy target:
+    the user sets it ONCE (home-page control) and every project they build
+    deploys into it.
+    """
+    __tablename__ = "user_settings"
+
+    email: str = SQLField(primary_key=True, index=True, max_length=255)
+    # Cross-workspace deploy target (Option A): the target workspace
+    # URL this user's projects deploy INTO. Null = use the app's own workspace
+    # (or the server default DEFAULT_TARGET_WORKSPACE_HOST).
+    target_workspace_host: Optional[str] = SQLField(default=None, max_length=255)
+    # The catalog resolved from the target's region at save time (deterministic:
+    # region → the onboarded `solution_builder` catalog, or a per-region config
+    # override). Cached so project creation doesn't re-probe on every new project.
+    target_catalog: Optional[str] = SQLField(default=None, max_length=255)
+    created_at: datetime = SQLField(default_factory=utc_now)
+    updated_at: datetime = SQLField(default_factory=utc_now)
+
+
+class UserSettingsOut(BaseModel):
+    """Per-user settings response (+ the resolved effective target the deploy
+    path will actually use, so the UI can show the default when unset)."""
+    target_workspace_host: Optional[str] = None
+    # The value deploys actually use = user setting or the server default.
+    effective_target_workspace_host: Optional[str] = None
+    # Whether the deployer SP is configured (cross-workspace deploy is live).
+    # When False the deploy-target control is inert, so the UI hides it — a
+    # default (SP-off) deployment shows nothing cross-workspace/SP-related.
+    cross_workspace_deploy_enabled: bool = False
+    # The server's shared-default target host. Lets the UI recognize when the
+    # user's saved target IS the shared default and label it "shared default"
+    # (never its raw name), even before the target control loads.
+    default_target_workspace_host: Optional[str] = None
+    # Explicit feature gate (managed/internal build vs OSS build). The UI gates
+    # the ENTIRE cross-workspace target UX on `cross_workspace_deploy_enabled`
+    # (declared above: deployer SP configured) instead of inferring from the
+    # presence of a default host — so on an OSS install (deployer SP unset) the
+    # whole feature is absent, not just dormant.
+
+
+class UserSettingsUpdateRequest(BaseModel):
+    """Set the user's cross-workspace deploy target. Empty string clears it
+    (→ fall back to the server default / app's own workspace)."""
+    target_workspace_host: Optional[str] = None
 
 
 class UserOut(BaseModel):

@@ -15,7 +15,7 @@ A **system that generates Databricks demos**. Not one app — **three**, plus a 
 
 4. **Test copies** (`app/test/{app_template_test,app_template_test_simple,luxebeauty_workshop}/`) — runnable, live-workspace-wired copies of the skill's template app + reference demos, used to dogfood + iterate. **The workflow is: debug in the test copy, then sync the working content back into the skill.** They must stay in lockstep. See "Test apps ↔ skill" below.
 
-Plus: **Databricks Agent Skills (DAS)** — cloned into `app/ai_dev_kit/` (dir name kept for path stability) from `github.com/databricks/databricks-agent-skills`, holding ~28 per-resource skills for creating individual Databricks resources (pipelines, dashboards, Genie spaces, KAs, MAS, etc.). Skills live under `skills/*` + `experimental/databricks-genie`; the generator's agent uses these during the Build stage. (Migrated from the retired `databricks-solutions/ai-dev-kit`.)
+Plus: **Databricks Agent Skills (DAS)** — cloned into `app/databricks_agent_skill/` (dir name kept for path stability) from `github.com/databricks/databricks-agent-skills`, holding ~28 per-resource skills for creating individual Databricks resources (pipelines, dashboards, Genie spaces, KAs, MAS, etc.). Skills live under `skills/*` + `experimental/databricks-genie`; the generator's agent uses these during the Build stage. (Migrated from the retired `databricks-solutions/ai-dev-kit`.)
 
 ## Mental model
 
@@ -70,7 +70,7 @@ industry-demo-prompts/
 │   │   ├── app_template_test_simple/     #   SIMPLE demo variant (src/ only): synth data → dashboard + genie
 │   │   ├── luxebeauty_workshop/          #   GENIE CODE WORKSHOP: src/ (notebooks + data_gen + answer-key SQL + CONTEXT.md) + deploy.sh
 │   │   └── architecture/                 #   (NOT a test app) gitignored render-loop scratch dir for the architecture skill
-│   ├── ai_dev_kit/                       # Cloned databricks-agent-skills repo (dir name kept; not a submodule)
+│   ├── databricks_agent_skill/                       # Cloned databricks-agent-skills repo (dir name kept; not a submodule)
 │   │   ├── skills/                       # ~28 per-resource skills (GA)
 │   │   └── experimental/databricks-genie/#   the one experimental skill we ship
 │   ├── databricks.yml                    # DAB config for the generator itself
@@ -414,16 +414,17 @@ styles/globals.css       # Tailwind + oklch CSS custom properties
 - **shadcn/ui:** add primitives manually from the shadcn registry into `components/ui/`.
 - **Testing:** Playwright E2E in `tests/` (repo root) targets `http://localhost:9000` (prod-mode server, not the split dev ports).
 
-### Preview-gated features (`?preview=on`)
+### Home entry tabs + the "coming soon" workshop tab
 
-In-progress / not-yet-GA UI is hidden behind a **preview flag** so it can ship to
-`main` without exposing it to everyone. The mechanism (in `ui/routes/index.tsx`):
-`?preview=on` enables it and **persists to `localStorage["preview-features"]`**
-(so it stays on across visits without the param); `?preview=off` disables it; with
-no param the stored value wins (default **off**). Gate a feature by rendering it
-only when the `previewEnabled` state is true. **Currently gates:** the "Genie Code
-workshop" home tab. Add future preview features to the same flag (one shared
-`preview-features` key — don't invent a per-feature param).
+`ui/routes/index.tsx` renders three home entry tabs: **Describe your story**,
+**Describe your architecture**, and **Genie Code workshop**. The workshop tab is
+**always shown** but the flow is **not GA** — selecting it renders a "coming
+soon" pitch card (title "Genie Workshop is coming soon" + the Genie-Code
+step-by-step value prop) *instead of* the working input form, so it can't be
+run. (Historically this tab was hidden behind a `?preview=on` / `localStorage
+["preview-features"]` flag; that flag mechanism was removed when the tab went
+always-visible-as-coming-soon. Reintroduce a similar flag if you need to gate a
+future not-yet-GA feature.)
 
 (Run/build commands live under **Quick commands** below.)
 
@@ -433,6 +434,151 @@ workshop" home tab. Add future preview features to the same flag (one shared
 - **Project** — A user workspace under `app/projects/<id>/` containing generated files + a Claude conversation.
 - **Template** (in the generator's sense) — A published project snapshot that other users can fork (NOT to be confused with the `app_template/` Databricks-App template).
 - **resources.json** — Per-demo manifest of every Databricks resource that's been created (catalog, schema, pipeline_id, dashboard_id, KA id, MAS id, app name, …). The agent writes to it during Stage 3 Build.
+
+## Grounding a demo in real UC tables — scan → grounded suggest → fit ranking
+
+Story tab, **"Use synthetic data" OFF** → the `GroundingTablePicker` panel. The user picks
+real UC tables and the demo is **built DIRECTLY on those exact tables, READ-ONLY** —
+dashboards, Genie, metric views query them in place; **no synthetic data is generated, the
+tables are not copied, and they are never written to or modified**. (This replaced the earlier
+"schema blueprint → synthesize a matching replica" behavior; if you see prose about generating
+matching synthetic data in the grounded flow, it's stale.) This is a **consultative
+recommender, not a gate**: we scan the tables, suggest use-cases, and signal which ones the
+data best supports. (NOTE: the older
+`/api/grounding/analyze` + `discover`/`validate` + typed-`gaps`/`verdict` +
+`data-gap-analysis.md` model was **removed** — `services/grounding_analysis.py`,
+`ProjectCreateRequest.grounding_analysis`, and `grounding-fit-report.tsx` no longer exist.
+Don't reintroduce those names.)
+
+**The flow (frontend `index.tsx` `commitGrounding`):** pick tables → `POST
+/api/grounding/scan` (`routes/grounding.py`) warms the process-level scan cache → run the
+grounded capability-suggest stream (`POST /api/capabilities/suggest`, `routes/constants.py`)
+→ ideas stream into the cards, **best-fit-first, each with a fit badge**.
+
+**The picker only offers what the USER can SELECT.** The demo build queries the real tables
+**as the user** (agent auth = the user's profile / OBO token), but the resource-listing
+endpoints run as the app SP and `.list()` returns *visible* (BROWSE-able), not SELECT-able,
+objects — so the picker used to offer catalogs the build then couldn't read. Fix:
+`GroundingTablePicker` calls `listCatalogs/listSchemas/listTables` with **`selectable_only`**,
+which makes `routes/resources.py` list + access-check **as the current user (OBO)** and keep
+only objects the user *effectively* holds the right privilege on — **catalogs/schemas gate on
+`USE_*`, tables gate on `SELECT`** (`_accessible` → `grants.get_effective(principal=<user>)`,
+a control-plane call that works via OBO on Apps, unlike warehouse queries). Traverse-check
+granularity (a catalog you can USE but SELECT nothing in still appears, with an empty table
+list); **fail-closed per item** (unconfirmable → hidden), with a wholesale-failure fallback to
+the unfiltered list so the picker is never empty. Per-securable decisions + per-user visible
+lists are cached in `_resource_cache` (5 min, per-user keys). The param defaults off, so other
+callers of these endpoints are unchanged.
+
+**The scan** (`services/table_stats.py`, cached ~30 min, keyed by `(host, full_name)`): per
+table, `SELECT * LIMIT 4` (schema + samples) + one wide APPROX aggregate (distinct / null% /
+min-max / mean-quartiles) + a few low-card `GROUP BY` top-value queries. Bounds:
+`MAX_TABLES=20`, `MAX_COLUMNS_PER_TABLE=40`, `MAX_TOP_VALUE_COLUMNS=8`. Best-effort — a
+per-table failure is captured on `TableScan.error` and the others proceed.
+
+**Fit ranking (the consultation layer).** `table_stats.derive_capability_signals(scans)` /
+`render_capability_signals(scans)` compute **deterministic** signals over the
+already-scanned columns (NO extra queries): time columns, numeric **measures** (id-ish names
+demoted via `_looks_like_id`), low-card **dimensions** (+ their top values), and candidate
+**join keys** (an id-ish column name shared across ≥2 tables). `_append_grounding_tables`
+injects that summary into the grounded prompt, and `_build_grounded_system_prompt` makes the
+LLM emit each idea with `fit = {tier: "Great"|"Good"|"Possible", reason: "<=12 words"}` ordered
+**best-fit-first**, plus a `why` (2–4 conversational, value-first sentences shown on expand)
+and `datasources` that span a **coherent multi-table subset** (a fact + the dimensions it
+joins — the prompt pushes multi-table stories off the join-key signals, not one lonely table).
+The grounded ideas are asked to vary in sophistication (descriptive / diagnostic /
+forward-looking). `_normalize_fit` validates the tier server-side; the SSE `idea` event carries
+`fit` + `why` (only in grounded mode — absent in synthetic mode). **UI:** the card shows just
+the tier badge + hook + linked table chips; the **expanded modal** holds the `fit.reason`
+(column/join detail), the "Why this use-case works with your data" panel (`why`), and a
+**collapsible** table list. Table names deep-link to Catalog Explorer via
+`ucExploreUrl`/`getWorkspaceInfo` (the `TableChip` component). **Fit is a signal, never a
+blocker** — it rates how well the real data backs each idea; every idea is still buildable.
+The grounded capability defaults DROP `synthetic-data-gen` + ingest (`lakeflow-connect`/`sdp`/
+`zerobus`) — the data already exists and isn't generated — and avoid `databricks-apps`+
+`lakebase` (their write-back can't run against read-only customer tables). **Unless the user
+opts into data-write** (see the opt-in below), which re-enables those write-needing
+capabilities.
+
+**Model size.** Grounded suggest runs on **`ModelSize.NORMAL`** (multi-table schema→story
+reasoning + fit rating is where `MINI` is weakest; grounded runs are low-volume);
+non-grounded suggest stays `MINI`. See the `grounded` branch in `suggest_capabilities`.
+
+**Durability / handoff to the build agent — TWO files carry the discovery analysis.**
+`projects.py::_build_source_tables_md` writes `specifications/source-tables.md` — the record
+of the real tables the demo is built on READ-ONLY, **schema only** (control-plane
+`ws.tables.get()`: columns / types / nullability / comments; every column; capped at 40
+tables via the shared `table_stats.MAX_TABLES`). It does **NOT** embed a per-column profile or
+capability signals: the **build agent profiles the tables itself**, read-only, off a warehouse
+at build time (skill `references/grounding-table-stats.md` + `stages/03.1r-build-on-real.md`
+Step 1) — so profiling isn't duplicated server-side and stays fresh. Its header tells the
+agent to point every component at these exact tables, NOT generate/copy/modify them, and to
+profile them itself. (The home-page suggest/scan still profiles via `table_stats` to rate idea
+fit — that path runs pre-project, where there's no agent to delegate to; see above.) **Second
+file:** when the client sends a `discovery` payload
+(`ProjectCreateRequest.discovery` = `DiscoveryAnalysis`: `chosen` idea + `alternatives[]` +
+`reasoning`), `_build_data_discovery_md` writes `specifications/data-discovery.md` — the
+chosen use-case (title/hook/why/**fit**), the alternatives set aside, and the capability
+reasoning, framed as **AGREED SCOPE**. This is the "keep what the LLM learned during data
+discovery" durability file (same pattern as `context/source-brief.md`): the frontend
+`handleCreateProject` grounded branch builds `discovery` from the picked idea + the other
+`ideas` + `capabilityReasoning`, and the initial prompt + the skill (SKILL.md flow A,
+`stages/01-design-story.md`, `02-write-specs.md`, `03.1r-build-on-real.md`) tell the agent to
+read it and build the chosen use-case rather than re-deriving/contradicting it. Written only
+for a grounded project **and** only when a discovery payload is present (a grounded create
+without discovery, or any non-grounded create, writes neither). The chosen idea's `fit.reason`
+also still rides into the initial agent prompt next to the picked hook.
+
+**The BUILD actually honors read-only via a dedicated skill fork.** The prompts above only
+*ask* for read-only; the authoritative build guide is the **solution-builder skill**, which
+was historically built for the OPPOSITE model ("real tables as a blueprint → synthesize a
+replica") — so grounded projects still generated data (into an `ai_demo_gen` catalog) until
+this fork landed. Now the skill **forks Build by the grounded signal** (presence of
+`specifications/source-tables.md`): `SKILL.md` flow A → **`stages/03.1r-build-on-real.md`**
+(NOT `03.1-build.md`), whose Step 1 **verifies the real tables are readable and builds
+read-only components on them — no data-gen, no SDP**. `03.1-build.md` Step 1 carries a
+wrong-fork guard; `stages/01`/`02` + the `synthetic-data-gen` capability block were flipped to
+match. **Read-only REPLACED the blueprint-synthesis model** — no `discover`/`validate`, no
+blueprint synthesis.
+
+**Data-write opt-in (the hybrid).** A grounded demo is read-only analytics by default. The
+`GroundingTablePicker` panel has an **opt-in checkbox** ("Let the demo add its own supporting
+data", default OFF) → `ProjectCreateRequest.allow_data_write` /
+`SuggestCapabilitiesRequest.allow_data_write`. When ON: the demo MAY create **auxiliary**
+tables in its OWN catalog (so apps/ML/write-back work) — **the user's real tables stay
+read-only either way.** Backend: `projects.py::_resolve_capabilities` drops the write-needing
+set (`_GROUNDED_WRITE_CAPABILITIES`) from `resources.json` unless opted in;
+`_build_source_tables_md`'s header records the opt-in state; `_build_grounded_system_prompt`
+swaps its capability rules on the flag; the initial prompt + `groundingNote` (index.tsx) carry
+a `dataWriteNote`. The skill's `03.1r` fork + flow A read that opt-in from the source-tables.md
+header / opening message.
+
+**The "Your data" overview card.** `project-overview.tsx` renders a read-only "Your data" card
+under the hero for grounded projects — detected by the presence of
+`specifications/source-tables.md` (parsed client-side for the table FQNs via
+`parseGroundingTables`; opt-in state via a `Data-write opt-in: ENABLED` header match). It
+deep-links the catalogs/schemas/tables to Catalog Explorer (`ucExploreUrl` + `getWorkspaceInfo`)
+and flags that the demo runs read-only on the real data.
+
+If you change the `fit`/`why` shape or the capability-signal fields, keep these in lockstep:
+`table_stats.derive_capability_signals`/`render_capability_signals`, the grounded prompt +
+`_normalize_fit` in `routes/constants.py`, the `IdeaFit`/`UseCaseIdea` types (incl. `why`) +
+the card/modal rendering + the `TableChip` deep-links in the UI, and this section.
+
+## Lossless intake of a big brief (`context/source-brief.md` + `context/uploads/`)
+
+**The problem this solves:** when a user pastes a long, well-thought-out spec, the demo used to "dumb it down." The transport was never the culprit — the typed text reaches `client.query()` verbatim and is persisted as a `Message`. The losses were: (1) **uploaded files were hard-truncated** — `uploads.py::MAX_CHARS_PER_FILE` was 30 KB and `file_extraction.py::MAX_TABULAR_ROWS` was 10, so a multi-page spec doc / spreadsheet got cut before it ever hit disk; (2) **the skill funnelled every brief through a README rewrite** and the agent's *compressed* README became the on-disk source of truth, so across Stage 1→2→3 + context compaction the rich brief dropped out of context while the summary persisted, and the agent re-grounded on its own summary.
+
+**The fix (three moving parts, keep them in lockstep):**
+- **Caps raised so real bounds govern, not arbitrary content limits:** `MAX_CHARS_PER_FILE = 2_000_000` (per-file extracted-char cap) and `MAX_TABULAR_ROWS = 200_000` (CSV/XLSX row cap). The row cap is deliberately NOT the binding limit — a CSV can be a *data dictionary* where every row is a column definition (a 60-table schema ≈ 1,200 rows), so clipping it loses the schema. The true bounds are the route's **10 MB raw-byte cap** (bounds memory) + the char cap (bounds context); the row cap just backstops a pathologically tall file, set well above what 10 MB can hold so CSV survives intact like `.md`/`.txt`. The cheap home-page *suggest* LLM is protected separately by the frontend's `SUGGEST_CONTEXT_MAX` (~50 KB) re-cap, so raising these doesn't bloat that call. **Regression-locked by `app/tests_backend/test_context_intake_fidelity.py`** — don't lower a cap without updating/those tests failing.
+- **Durable verbatim brief:** `ProjectCreateRequest.source_brief` carries the user's RAW typed text (frontend passes `topic.trim()`, stripped of the "Help me build…" wrapper / capability line / brand+kickoff appendix). When it's substantial (**≥ 280 chars**, in `routes/projects.py`) it's written verbatim to `context/source-brief.md`. The frontend also appends a note to `initial_prompt` (same ≥280 threshold) pointing the agent at that file. Below the threshold (a one-line topic) no file is written and no note added.
+- **Skill honors it:** SKILL.md Stage 0 + `stages/01-design-story.md` + `stages/02-write-specs.md` tell the agent to read `context/source-brief.md` (and `context/uploads/`) FIRST, treat it as authoritative, and defer to it whenever it's richer than the derived README. The README is explicitly a *presenter summary*, never a replacement for the brief.
+
+If you touch any one of these, keep the ≥280 threshold consistent across `routes/projects.py` and `index.tsx`, and keep the skill instructions pointing at the real filename.
+
+**Known gap:** `file_extraction.SUPPORTED_EXTENSIONS` does NOT include `.sql` — a user uploading a raw `.sql` DDL gets a 400. Supported today: `.pdf .xlsx .csv .docx .md .txt .json .yaml .yml .html .xml .log`. A schema uploaded as `.txt`/`.md`/`.csv` (data dictionary) works; add `.sql` (plain-text decode) if that comes up.
+
+**Verified end-to-end (live-app API tests, 2026-07-24):** a pasted 4.5 KB pharma-logistics spec and an uploaded warehouse schema (`.txt` DDL + 46-row CSV dictionary) both drove generation with **100% of specifics preserved into the generated specs** — exact `mfx_*` table/column/type names, enum values, and business rules (e.g. the agent correctly noted the rolling-30-day acceptance must be *derived from the tenders table*, not read from the static scorecard column). Large-schema intake (116 KB / 1,201-row CSV) survives with the tail intact.
 
 ## Initial (seed) templates — `initial_templates/`
 
@@ -457,7 +603,7 @@ The pre-built **official** templates seeded into the DB on startup (so a fresh w
 All from `app/`:
 
 ```bash
-./scripts/dev.sh              # uvicorn:8000 + vite:5173 + auto-clone ai_dev_kit
+./scripts/dev.sh              # uvicorn:8000 + vite:5173 + auto-clone databricks_agent_skill
 npx tsc --noEmit              # Frontend types
 uv run mypy src               # Backend types
 bun run build                 # Frontend → src/demo_prompt_generator/ui/__dist__/
@@ -496,6 +642,15 @@ The dev DB mode is chosen in `backend/core/lakebase.py` `_is_pglite_mode()`: PGL
 - **`RESET_DB=1` does NOT mean "wipe a throwaway local DB."** In Lakebase mode it **DROPS ALL TABLES on the remote branch** your `.env` points at (`lakebase.py:375`); in PGLite mode it deletes `~/.pglite/`. **Never run `RESET_DB=1` — or any test that sets it — against a branch holding real projects.** Point a test at a temp branch/DB instead.
 - **Recovery:** Lakebase branches are copy-on-write with point-in-time restore. If a branch is damaged, create a recovery branch from a past timestamp (`databricks postgres create-branch … --json '{"spec":{"source_branch":"…/branches/<b>","source_branch_time":"<ISO ts>","no_expiry":true}}'`), verify the data, then repoint `.env` at it. On-disk `app/projects/<id>/` files survive a DB drop regardless — only the DB rows (project metadata, message history) are lost.
 
+### ⚠️ Alembic migrations: NEVER re-parent a released migration (multi-head-skip footgun)
+
+Migrations live in `backend/migrations/versions/` and run on every boot via `initialize_models` → `command.upgrade(…, "head")` (single `alembic_version` row; a `pg_advisory_lock` serializes workers). The chain **must stay a single linear head.**
+
+- **The footgun (this caused a prod outage):** when two feature branches each add migrations off the same parent, merging creates **two Alembic heads**. If you "fix" that by **rewriting the `down_revision` of an already-released migration** to splice the branches into one line, any DB that was **already stamped past the splice point on the *other* lineage** will treat the re-parented revisions as already-applied ancestors — `upgrade head` becomes a no-op and **their DDL never runs**, while `alembic_version` still says `head`. The app boots, then 500s on the missing columns/tables. (2026-08: prod reached `v18` up the template lineage and silently skipped the xws migrations `v13_target_ws_host`/`v14_user_settings`/`v15_ownership_hash`; a fresh DB was fine because its chain was linear from the start.)
+- **The rule:** to resolve multiple heads, add an **`alembic merge`** revision (a new node with both heads as `down_revision`). **Do not** rewrite the `down_revision` of a migration that has already shipped to any long-lived DB (prod/staging). New migrations may only be *appended* after the current single head.
+- **Boot-time safety net (defense-in-depth):** after `upgrade head`, `initialize_models` calls `_reconcile_schema_drift(engine)` (`core/schema_guard.py::detect_schema_drift`), which diffs `SQLModel.metadata` against the live DB. Missing **tables** are auto-created (`create_all` — safe, no drops); missing **columns** are logged as a loud `MANUAL ACTION REQUIRED` error (the type/nullable/default live in the owning migration, so they can't be synthesized generically — apply that migration's DDL by hand as the owner SP). This turns a silent broken-schema boot into a loud, often self-healed one. Regression-locked by `tests_backend/test_schema_drift_guard.py`.
+- **No CI guard yet** (GitHub Actions isn't enabled on this repo). When it is, add: assert `alembic heads` yields exactly one head, and that a fresh `upgrade head` on ephemeral Postgres produces a schema matching `SQLModel.metadata` (a `create_all` diff that's a no-op).
+
 For the **test copies** (separate from the generator — see "Test apps ↔ skill" above):
 
 ```bash
@@ -514,7 +669,7 @@ cd app/test/luxebeauty_workshop && ./deploy.sh     # Gen raw data → UC Volume 
 - **Routing** (generator UI): TanStack Router file-based. Don't edit `routeTree.gen.ts`.
 - **Template app stack**: Node + Express (`@databricks/appkit`) + React + Drizzle + OpenAI Agents SDK + mlflow-tracing. Different stack from the generator.
 - **Logger** (template `server/lib/logger.ts`): `console.debug` is gated by `LOG_LEVEL` env (default INFO). Use it for per-request chatter; reserve `console.error` for actual failures.
-- **Public mirror / internal-only content**: this repo (`databricks-field-eng/industry-demo-prompts`) is the PRIVATE source; `github.com/databricks-solutions/solution-builder` is the public mirror. Internal-only files live under clearly-`INTERNAL`-marked paths and are listed in **`.publicignore`** (repo root) — the private→public mirror job must exclude everything there. Current internal content: the three committed **deploy overlays** (`app/databricks.{prod,staging,prod-fevm}.yml` — real workspace/Lakebase IDs, endpoint names, admin emails; no secrets). (The former `/internal-demos` Demo-West catalog page was removed.)
+- **Public mirror / internal-only content**: this repo (`databricks-field-eng/industry-demo-prompts`) is the PRIVATE source; `github.com/databricks-solutions/solution-builder` is the public mirror. Internal-only files live under clearly-`INTERNAL`-marked paths and are listed in **`.publicignore`** (repo root) — the private→public mirror job must exclude everything there. Current internal content: the committed **deploy overlays** (`app/databricks.{prod,staging}.yml` — real workspace/Lakebase IDs, endpoint names, admin emails; no secrets). (The former `/internal-demos` Demo-West catalog page was removed.)
 
 ## Operational rules (durable preferences)
 

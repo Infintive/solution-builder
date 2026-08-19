@@ -9,8 +9,7 @@
 # Syntax: gitignore-style globs, repo-root-relative.
 
 # Internal deploy overlays — real workspace/Lakebase IDs, endpoint names, admin
-# emails for the official prod / staging / FEVM deployments. No secrets, but
+# emails for the official prod / staging deployments. No secrets, but
 # internal-only. The public repo ships only the *.example templates.
 app/databricks.prod.yml
 app/databricks.staging.yml
-app/databricks.prod-fevm.yml

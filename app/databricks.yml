@@ -32,6 +32,12 @@ variables:
     description: "Embedding endpoint (template search)."
   default_catalog:
     description: "Unity Catalog every new project lands in. Created at app boot if missing, with USE CATALOG + CREATE SCHEMA granted to `account users` and ALL PRIVILEGES granted to each admin in template_admin_emails."
+  deployer_sp_client_id:
+    description: "Model-3 ONLY. Deployer-SP OAuth client id. SECRET-ADJACENT: never commit a real value — the default is a placeholder; supply the real id at deploy via `export BUNDLE_VAR_deployer_sp_client_id=...`."
+    default: "<set-via-BUNDLE_VAR_deployer_sp_client_id>"
+  deployer_sp_client_secret:
+    description: "Model-3 ONLY. Deployer-SP OAuth secret. NEVER commit a real value — the default is a placeholder; supply the real secret at deploy via `export BUNDLE_VAR_deployer_sp_client_secret=...`."
+    default: "<set-via-BUNDLE_VAR_deployer_sp_client_secret>"
   app_env:
     # Runtime env injected into .build/app.yml by scripts/build.sh — keys here
     # become env vars in the deployed container. Add a key to databricks.prod.yml's
@@ -57,7 +63,9 @@ sync:
     - .build/pyproject.toml
     - .build/uv.lock
     - .build/.claude/**
-    - .build/initial_templates/**
+    # Per-template zips (not the wheel) — start.sh unzips them into the runtime
+    # templates dir on boot. Keeps the wheel under the Apps 10 MB export cap.
+    - .build/initial_templates_zips/**
 
 artifacts:
   default:
@@ -104,6 +112,27 @@ resources:
       name: ${var.app_name}
       description: "Demo Prompt Generator — generates Databricks demo skill packages"
       source_code_path: ./.build
+      # User Authorization (OBO) OAuth scopes requested on the acting user's
+      # downscoped x-forwarded-access-token. Declared here so they SURVIVE
+      # redeploys — otherwise editing any app setting (or a redeploy) resets
+      # User Authorization to just the two built-in defaults
+      # (iam.access-control:read, iam.current-user:read) and drops these.
+      #
+      # The deploy path itself needs NO OBO scope — ALL resource deploys run as
+      # the DEPLOYER SP against the target (subprocess_auth_env target_deploy
+      # branch), and metadata/embeddings LLM calls run as the APP SP. The OBO
+      # scopes below cover the agent's metadata reads (catalog/schema/table
+      # listing) during builds. The Apps user_api_scopes API REJECTS the literal
+      # `unity-catalog` ("not a valid scope") and `catalog`, accepting only the
+      # granular `catalog.*` family — so we request the full granular UC set,
+      # the grantable superset of the connections capability. This workspace
+      # REJECTS `all-apis`/`iam.*`.
+      # GENERIC scopes only — the agent's OBO calls read catalog metadata during
+      # builds in EVERY tier. DAB APPENDS target user_api_scopes to this base list.
+      user_api_scopes:
+        - catalog.catalogs
+        - catalog.schemas
+        - catalog.tables
       # NOTE on the Lakebase grant: even with TF 1.15.0, Apps' grant API rejects
       # autoscaling project slugs ("Database instance X does not exist") — it
       # only knows legacy Lakebase Provisioned instances. So no `database`

@@ -29,11 +29,18 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { Prose } from "@/components/markdown-prose";
 import {
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -45,6 +52,7 @@ import {
   FileText,
   Folder,
   GitFork,
+  GraduationCap,
   Loader2,
   Network,
   Sparkles,
@@ -267,6 +275,9 @@ export function TemplateGallerySheet({
   const [archMd, setArchMd] = useState<string | null>(null);
   const [archState, setArchState] = useState<ArchState>("idle");
   const [isDownloading, setIsDownloading] = useState(false);
+  // Workshop download takeover: on "Download a copy of this workshop" the whole
+  // sheet swaps to a preparing → done flow (import + Genie-Code instructions).
+  const [workshopFlow, setWorkshopFlow] = useState<"idle" | "preparing" | "done">("idle");
   const [tab, setTab] = useState<TabKey>("overview");
   // Screenshot carousel index (0 = hero). Only meaningful when screenshot_count > 1.
   const [shotIndex, setShotIndex] = useState(0);
@@ -348,11 +359,26 @@ export function TemplateGallerySheet({
     }
   };
 
+  // Workshop-only: take over the whole sheet with a "getting it ready" state,
+  // trigger the same zip export, then show import + Genie-Code instructions.
+  const handleDownloadWorkshop = async () => {
+    if (!templateId) return;
+    setWorkshopFlow("preparing");
+    try {
+      await exportTemplate(templateId);
+      setWorkshopFlow("done");
+    } catch (e) {
+      console.error("Failed to download workshop:", e);
+      setWorkshopFlow("idle"); // fall back to the normal sheet on failure
+    }
+  };
+
   useEffect(() => {
     if (!templateId) {
       setDetail(null);
       setArchMd(null);
       setArchState("idle");
+      setWorkshopFlow("idle");
       setFiles([]);
       setSelectedFile(null);
       setFileContent("");
@@ -413,6 +439,9 @@ export function TemplateGallerySheet({
   }, [templateId, selectedFile, tab]);
 
   const isApproved = detail?.status === "APPROVED";
+  // Workshop templates get a single split-button (Download + fork-as-option),
+  // instead of the standard side-by-side Download DAB + "Use this template".
+  const isWorkshop = detail?.template_type === "WORKSHOP";
   const fileTree = useMemo(() => buildFileTree(files), [files]);
   const hasArch = archState !== "absent";
   // The Databricks products this template is actually built from (resolved from
@@ -442,10 +471,75 @@ export function TemplateGallerySheet({
               "Template details: story, architecture, and included files."}
           </DialogPrimitive.Description>
 
-          {templateId && (
+          {/* While the detail is loading, show ONE big centered spinner instead
+              of the half-built chrome (tabs/buttons that pop in piecemeal). */}
+          {templateId && (isLoading || !detail) && (
+            <div className="flex h-full flex-col items-center justify-center gap-4">
+              <DialogPrimitive.Close className="absolute right-4 top-4 rounded-md p-1 opacity-60 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring cursor-pointer">
+                <X className="h-4 w-4" />
+                <span className="sr-only">Close</span>
+              </DialogPrimitive.Close>
+              <Loader2 className="h-10 w-10 animate-spin text-primary" />
+              <p className="text-sm text-muted-foreground">Loading template…</p>
+            </div>
+          )}
+
+          {/* ── Workshop download takeover — replaces the whole sheet ──────── */}
+          {templateId && !isLoading && detail && workshopFlow !== "idle" && (
+            <div className="flex h-full flex-col items-center justify-center px-8 text-center">
+              <DialogPrimitive.Close className="absolute right-4 top-4 rounded-md p-1 opacity-60 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring cursor-pointer">
+                <X className="h-4 w-4" />
+                <span className="sr-only">Close</span>
+              </DialogPrimitive.Close>
+
+              {workshopFlow === "preparing" ? (
+                <div className="flex flex-col items-center gap-4">
+                  <Loader2 className="h-10 w-10 animate-spin text-primary" />
+                  <p className="text-base font-medium">Getting the workshop ready for you…</p>
+                  <p className="max-w-md text-sm text-muted-foreground">
+                    Packaging {detail.name} — the data generator, specs, and bootstrap app — into a
+                    zip you can import into your workspace.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex max-w-lg flex-col items-center gap-5">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-400">
+                    <Check className="h-6 w-6" />
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-lg font-semibold">Your workshop is downloaded 🎉</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Import the zip into your Databricks workspace, then open a{" "}
+                      <span className="font-medium text-foreground">Genie Code</span> session in the
+                      folder and let it build the workshop with you — start from the kickoff prompt in
+                      the README and work through the milestones.
+                    </p>
+                  </div>
+
+                  <div className="w-full rounded-lg border border-amber-500/40 bg-amber-50 px-4 py-3 text-left text-[13px] leading-relaxed text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                    <span className="font-semibold">Tip:</span> for the app, reach for your favorite
+                    coding harness to build it now — the Genie App Builder is coming soon.
+                  </div>
+
+                  <div className="w-full rounded-lg border bg-muted/30 px-4 py-3 text-left text-[13px] leading-relaxed text-muted-foreground">
+                    <span className="font-medium text-foreground">Why build it yourself?</span> Yes,
+                    Solution Builder could one-shot most of this template — but the whole point of the
+                    workshop is <em>you</em> learning to drive Genie Code and seeing how these
+                    components fit together under the hood.
+                  </div>
+
+                  <DialogPrimitive.Close asChild>
+                    <Button variant="outline" className="mt-1">Done</Button>
+                  </DialogPrimitive.Close>
+                </div>
+              )}
+            </div>
+          )}
+
+          {templateId && !isLoading && detail && workshopFlow === "idle" && (
             <div className="flex h-full min-h-0 flex-col">
-              {/* ── Header: industry + title ─────────────────────────────────── */}
-              <div className="relative shrink-0 border-b bg-gradient-to-b from-muted/40 to-background px-6 pb-4 pt-5">
+              {/* ── Header: badges + title + one-line summary ────────────────── */}
+              <div className="relative shrink-0 border-b bg-gradient-to-b from-muted/40 to-background px-6 pb-5 pt-6">
                 <DialogPrimitive.Close className="absolute right-4 top-4 rounded-md p-1 opacity-60 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring cursor-pointer">
                   <X className="h-4 w-4" />
                   <span className="sr-only">Close</span>
@@ -462,10 +556,31 @@ export function TemplateGallerySheet({
                       {detail.industry}
                     </Badge>
                   )}
+                  {detail?.status && detail.status !== "APPROVED" && (
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                        detail.status === "REJECTED"
+                          ? "bg-destructive text-destructive-foreground"
+                          : "bg-amber-500 text-white",
+                      )}
+                    >
+                      {detail.status === "REJECTED" ? "Rejected" : "Pending review"}
+                    </span>
+                  )}
                 </div>
-                <h2 className="mt-1.5 text-xl font-semibold leading-tight">
+                <h2 className="mt-2 text-2xl font-semibold leading-tight tracking-tight">
                   {detail?.name ?? "Loading…"}
                 </h2>
+                {/* Short description as a header subtitle — only when there's a
+                    narrative below to carry the full story. Without a narrative
+                    the full description is shown in the Overview body instead (so
+                    it's never truncated with no way to read the rest). */}
+                {detail?.description && detail?.narrative && (
+                  <p className="mt-1.5 line-clamp-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+                    {detail.description}
+                  </p>
+                )}
               </div>
 
               {/* ── Tabs ─────────────────────────────────────────────────────── */}
@@ -497,11 +612,39 @@ export function TemplateGallerySheet({
                   className="mt-0 min-h-0 flex-1 data-[state=inactive]:hidden"
                 >
                   <ScrollArea className="h-full">
-                    <div className="mx-auto max-w-3xl space-y-6 px-6 py-6">
+                    <div className="w-full space-y-6 px-6 py-6">
+                      {/* Workshop note — a template that isn't a full SOLUTION is a
+                          starting point the trainee builds out, so set expectations
+                          right above the story. */}
+                      {(detail?.template_type === "WORKSHOP" ||
+                        detail?.template_type === "GENIE_WORKSHOP") && (
+                        <div className="flex items-start gap-2.5 rounded-lg border-l-2 border-amber-500 bg-amber-50 px-3.5 py-3 text-[13px] leading-relaxed text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                          <GraduationCap className="mt-0.5 h-4 w-4 shrink-0" />
+                          <span>
+                            <span className="font-semibold">Workshop template.</span>{" "}
+                            This is a hands-on training starting point — it ships the data
+                            generator, specs, and a bootstrap app, and <em>you build</em> the
+                            solution across the milestones. Not everything is pre-implemented.
+                            <span className="mt-1.5 block">
+                              <span className="font-semibold">How to start:</span> download
+                              this project, import it into your Databricks workspace, and have
+                              Genie Code build the solution with you.
+                            </span>
+                          </span>
+                        </div>
+                      )}
                       {/* Narrative — the story summary, at the very top. */}
                       {detail?.narrative && (
                         <p className="whitespace-pre-line text-[15px] leading-relaxed text-foreground/90">
                           {detail.narrative}
+                        </p>
+                      )}
+
+                      {/* No narrative → the full description is the overview text
+                          (the header omits it in this case to avoid truncation). */}
+                      {!detail?.narrative && detail?.description && (
+                        <p className="whitespace-pre-line text-[15px] leading-relaxed text-foreground/90">
+                          {detail.description}
                         </p>
                       )}
 
@@ -520,7 +663,7 @@ export function TemplateGallerySheet({
                                 }
                                 alt={`${detail.name} screenshot ${idx + 1}`}
                                 loading="lazy"
-                                className="w-full object-contain"
+                                className="mx-auto max-h-[440px] w-full object-contain"
                               />
                               {count > 1 && (
                                 <>
@@ -589,18 +732,6 @@ export function TemplateGallerySheet({
                         </div>
                       )}
 
-                      {/* Description — fallback Overview only when there's no narrative. */}
-                      {!detail?.narrative && detail?.description && (
-                        <section className="space-y-2">
-                          <h4 className="text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
-                            Overview
-                          </h4>
-                          <p className="text-[13.5px] leading-relaxed text-foreground/90">
-                            {detail.description}
-                          </p>
-                        </section>
-                      )}
-
                       {/* Products — the Databricks products this template is
                           built from (resolved from its capability ids). Only
                           the products that make up THIS demo, in flow order. */}
@@ -626,29 +757,6 @@ export function TemplateGallerySheet({
                         </section>
                       )}
 
-                      {/* Quick jumps to the other tabs so the story keeps moving. */}
-                      <div className="flex flex-wrap gap-2 pt-1">
-                        {hasArch && (
-                          <button
-                            type="button"
-                            onClick={() => setTab("architecture")}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-[13px] font-medium text-foreground/80 transition-colors hover:border-primary/40 hover:bg-primary/10 hover:text-primary cursor-pointer"
-                          >
-                            <Network className="h-3.5 w-3.5" /> View architecture
-                            <ChevronRight className="h-3.5 w-3.5 opacity-60" />
-                          </button>
-                        )}
-                        {files.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setTab("files")}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-[13px] font-medium text-foreground/80 transition-colors hover:border-primary/40 hover:bg-primary/10 hover:text-primary cursor-pointer"
-                          >
-                            <Folder className="h-3.5 w-3.5" /> Browse {files.length} files
-                            <ChevronRight className="h-3.5 w-3.5 opacity-60" />
-                          </button>
-                        )}
-                      </div>
                     </div>
                   </ScrollArea>
                 </TabsContent>
@@ -840,54 +948,106 @@ export function TemplateGallerySheet({
                 </div>
               )}
 
-              {/* Footer — download the DAB + (optional) fork */}
+              {/* Footer — download the DAB + (optional) fork.
+                  Workshops collapse to ONE split-button on the right: primary =
+                  "Download a copy of this workshop", chevron dropdown = "Use this
+                  template" (fork). Non-workshops keep the side-by-side layout. */}
               <div className="flex shrink-0 items-center gap-3 border-t bg-muted/10 px-6 py-4">
-                <Button
-                  variant="outline"
-                  onClick={handleDownloadDab}
-                  disabled={isLoading || isDownloading || !detail}
-                  title="Download this template as a Databricks Asset Bundle (databricks bundle deploy)"
-                >
-                  {isDownloading ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Download className="mr-2 h-4 w-4" />
-                  )}
-                  Download DAB
-                </Button>
-
-                {onFork && (
-                  <>
-                    <span className="hidden text-xs text-muted-foreground sm:inline">
-                      or get a private editable copy
-                    </span>
+                {isWorkshop ? (
+                  <div className="ml-auto inline-flex items-center">
+                    {/* Primary: download the workshop → full-sheet takeover flow. */}
                     <Button
-                      className="ml-auto"
-                      onClick={() => detail && onFork(detail)}
-                      disabled={isLoading || !detail || !isApproved}
-                      title={
-                        !isApproved && detail
-                          ? "This template is pending approval and cannot be forked yet"
-                          : "Fork this template into a new project"
-                      }
+                      onClick={handleDownloadWorkshop}
+                      disabled={isLoading || !detail}
+                      title="Download this workshop as a zip you can import into your workspace"
+                      className={onFork ? "rounded-r-none" : undefined}
                     >
-                      {isLoading ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Loading…
-                        </>
-                      ) : !isApproved && detail ? (
-                        <>
-                          <Clock className="mr-2 h-4 w-4" />
-                          Pending approval
-                        </>
-                      ) : (
-                        <>
-                          <GitFork className="mr-2 h-4 w-4" />
-                          Use this template
-                        </>
-                      )}
+                      <Download className="mr-2 h-4 w-4" />
+                      Download a copy of this workshop
                     </Button>
+                    {/* Secondary (dropdown): fork into an editable project. */}
+                    {onFork && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            className="rounded-l-none border-l border-primary-foreground/20 px-2"
+                            disabled={isLoading || !detail}
+                            title="More options"
+                            aria-label="More options"
+                          >
+                            <ChevronDown className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => detail && onFork(detail)}
+                            disabled={isLoading || !detail || !isApproved}
+                          >
+                            {!isApproved && detail ? (
+                              <>
+                                <Clock className="mr-2 h-4 w-4" />
+                                Pending approval
+                              </>
+                            ) : (
+                              <>
+                                <GitFork className="mr-2 h-4 w-4" />
+                                Use this template
+                              </>
+                            )}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <Button
+                      variant="outline"
+                      onClick={handleDownloadDab}
+                      disabled={isLoading || isDownloading || !detail}
+                      title="Download this template as a Databricks Asset Bundle (databricks bundle deploy)"
+                    >
+                      {isDownloading ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="mr-2 h-4 w-4" />
+                      )}
+                      Download DAB
+                    </Button>
+
+                    {onFork && (
+                      <div className="ml-auto flex items-center gap-3">
+                        <span className="hidden text-xs text-muted-foreground sm:inline">
+                          or get a private editable copy
+                        </span>
+                        <Button
+                          onClick={() => detail && onFork(detail)}
+                          disabled={isLoading || !detail || !isApproved}
+                          title={
+                            !isApproved && detail
+                              ? "This template is pending approval and cannot be forked yet"
+                              : "Fork this template into a new project"
+                          }
+                        >
+                          {isLoading ? (
+                            <>
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              Loading…
+                            </>
+                          ) : !isApproved && detail ? (
+                            <>
+                              <Clock className="mr-2 h-4 w-4" />
+                              Pending approval
+                            </>
+                          ) : (
+                            <>
+                              <GitFork className="mr-2 h-4 w-4" />
+                              Use this template
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    )}
                   </>
                 )}
               </div>

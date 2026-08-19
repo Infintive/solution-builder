@@ -13,8 +13,8 @@
 
 import { memo } from "react";
 import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
-import { ArrowUpRight, Sparkles, Database, Layers } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ArrowRight, Sparkles, Database, Layers, GraduationCap, Code2, LayoutTemplate } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 import {
   AIBIBrandIcon,
@@ -22,6 +22,17 @@ import {
   DatabricksAppsBrandIcon,
   SDPBrandIcon,
 } from "@/components/databricks-icons";
+
+/** Non-SOLUTION template kinds → a small tag shown on the tile (label + icon).
+ *  SOLUTION (the default) gets NO tag — it renders exactly as before. */
+export const TEMPLATE_TYPE_TAG: Record<
+  string,
+  { label: string; icon: ComponentType<SVGProps<SVGSVGElement>> }
+> = {
+  WORKSHOP: { label: "Workshop", icon: GraduationCap },
+  GENIE_WORKSHOP: { label: "Genie Workshop", icon: Code2 },
+  ARCHITECTURE: { label: "Architecture", icon: LayoutTemplate },
+};
 
 /** The headline capabilities we surface as brand-icon chips on a tile, in a
  *  fixed order (data → BI → conversational → app). Keyed by capability id. */
@@ -42,16 +53,17 @@ function CapabilityLogos({ capabilities }: { capabilities: string[] | null | und
   if (!capabilities || capabilities.length === 0) return null;
   const present = CAPABILITY_LOGOS.filter((c) => capabilities.includes(c.id));
   if (present.length === 0) return null;
+  // Icon-only chips (labels are in the `title` tooltip) — a compact, low-noise
+  // row so the card stays short and scannable.
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+    <div className="mt-2 flex flex-wrap items-center gap-1">
       {present.map(({ id, label, icon: Icon }) => (
         <span
           key={id}
           title={label}
-          className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-1.5 py-1 text-[10.5px] font-medium text-muted-foreground"
+          className="inline-flex items-center justify-center rounded-md border border-border/60 bg-muted/40 p-1 text-muted-foreground"
         >
           <Icon className="h-3.5 w-3.5" />
-          {label}
         </span>
       ))}
     </div>
@@ -62,6 +74,17 @@ import {
   type TemplateListItem,
   type DemoResourceLinks,
 } from "@/lib/custom-api";
+
+/** Deterministically map an industry to one of the theme's chart color tokens,
+ *  so screenshot-less tiles get a stable, distinct tint instead of a flat gray
+ *  placeholder. Returns a CSS custom-property name (e.g. "--chart-3"). */
+const CHART_VARS = ["--chart-1", "--chart-2", "--chart-3", "--chart-4", "--chart-5"];
+function industryTint(industry?: string | null): string {
+  if (!industry) return CHART_VARS[0];
+  let h = 0;
+  for (let i = 0; i < industry.length; i++) h = (h * 31 + industry.charCodeAt(i)) >>> 0;
+  return CHART_VARS[h % CHART_VARS.length];
+}
 
 /** Small quick-link chip that opens in a new tab without triggering the tile's
  *  open handler. `accent` gives the primary "Open App" chip a filled look. */
@@ -98,15 +121,26 @@ function QuickLink({
 export const TemplateGalleryTile = memo(function TemplateGalleryTile({
   template,
   onOpen,
+  onUse,
   links,
 }: {
   template: TemplateListItem;
   onOpen: (t: TemplateListItem) => void;
+  /** Fork the template straight from the tile (the primary action). Only wired
+   *  on the public gallery; omit it to keep the plain open-details behavior. */
+  onUse?: (t: TemplateListItem) => void;
   links?: DemoResourceLinks;
 }) {
   const open = () => onOpen(template);
   const official = template.official === true;
   const hasScreenshot = template.has_screenshot === true;
+  const tintVar = industryTint(template.industry);
+  // Forking requires an APPROVED template (the backend rejects others), so the
+  // primary "Use" action only shows for approved tiles.
+  const canUse = !!onUse && template.status === "APPROVED";
+  // Non-SOLUTION templates get a tag (Workshop / Genie Workshop / Architecture);
+  // SOLUTION renders with no tag, exactly as before.
+  const typeTag = template.template_type ? TEMPLATE_TYPE_TAG[template.template_type] : undefined;
 
   return (
     <div
@@ -127,10 +161,10 @@ export const TemplateGalleryTile = memo(function TemplateGalleryTile({
           : "border-border/60 shadow-[0_4px_16px_-6px_rgba(0,0,0,0.18)] hover:border-border hover:shadow-[0_14px_36px_-10px_rgba(0,0,0,0.32)]",
       )}
     >
-      {/* Hero screenshot. object-contain (not cover) so wide dashboard/app
-          screenshots downscale UNIFORMLY and stay crisp. Falls back to a
-          neutral placeholder (industry glyph) when there's no screenshot. */}
-      <div className="relative aspect-[16/10] w-full overflow-hidden border-b bg-muted/40">
+      {/* Hero screenshot (shorter 16/9 for a scannable grid). object-contain so
+          wide dashboard/app screenshots downscale UNIFORMLY; industry-tinted
+          placeholder when there's no screenshot. */}
+      <div className="relative aspect-[16/9] w-full overflow-hidden border-b bg-muted/40">
         {hasScreenshot ? (
           <img
             src={templateScreenshotUrl(template.id)}
@@ -139,60 +173,96 @@ export const TemplateGalleryTile = memo(function TemplateGalleryTile({
             className="h-full w-full object-contain object-top"
           />
         ) : (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted-foreground/60">
-            <Layers className="h-8 w-8" />
+          <div
+            className="flex h-full w-full flex-col items-center justify-center gap-1.5 text-foreground/70"
+            style={{
+              background: `linear-gradient(135deg, color-mix(in oklch, var(${tintVar}) 26%, var(--card)), var(--card))`,
+            }}
+          >
+            <Layers className="h-7 w-7 opacity-70" />
             {template.industry && (
-              <span className="text-[11px] font-medium">{template.industry}</span>
+              <span className="text-xs font-semibold tracking-tight">{template.industry}</span>
             )}
           </div>
         )}
-        {official && (
+        {/* One badge slot (top-right). Featured wins for official templates;
+            otherwise a status pill for non-approved ones. */}
+        {official ? (
           <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground shadow">
             <Sparkles className="h-3 w-3" /> Featured
+          </span>
+        ) : template.status && template.status !== "APPROVED" ? (
+          <span
+            className={cn(
+              "absolute right-3 top-3 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide shadow",
+              template.status === "REJECTED"
+                ? "bg-destructive text-destructive-foreground"
+                : "bg-amber-500 text-white",
+            )}
+          >
+            {template.status === "REJECTED" ? "Rejected" : "Pending review"}
+          </span>
+        ) : null}
+        {/* Primary action — revealed on hover over the image, so the resting
+            card stays clean and short. Card body click still opens details. */}
+        {canUse && (
+          <div className="absolute inset-x-0 bottom-0 flex justify-end bg-gradient-to-t from-black/55 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100">
+            <Button
+              size="sm"
+              className="h-7 gap-1 text-xs shadow-md"
+              onClick={(e) => {
+                e.stopPropagation();
+                onUse!(template);
+              }}
+              title={`Use "${template.name}" as a starting point`}
+            >
+              Use template <ArrowRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        )}
+        {typeTag && (
+          <span className="absolute left-3 top-3 inline-flex items-center gap-1 rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white shadow">
+            <typeTag.icon className="h-3 w-3" /> {typeTag.label}
           </span>
         )}
       </div>
 
-      <div className="flex flex-1 flex-col p-5">
-        {template.industry && (
-          <Badge variant="secondary" className="mb-3 w-fit text-[10px] font-medium">
-            {template.industry}
-          </Badge>
-        )}
-        <h3 className="text-[15px] font-semibold leading-tight text-foreground">
+      <div className="flex flex-1 flex-col p-4">
+        <div className="flex items-center gap-2">
+          {template.industry && (
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              {template.industry}
+            </span>
+          )}
+        </div>
+        <h3 className="mt-1 text-sm font-semibold leading-snug text-foreground">
           {template.name}
         </h3>
         {template.description && (
-          <p className="mt-2 line-clamp-3 text-[12.5px] leading-relaxed text-muted-foreground">
+          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
             {template.description}
           </p>
         )}
 
-        {/* Headline capability logos (SDP / Dashboard / Genie / App) — what the
-            solution is made of, at a glance. Derived from the capabilities list. */}
-        <div className="flex-1">
-          <CapabilityLogos capabilities={template.capabilities} />
-        </div>
+        <CapabilityLogos capabilities={template.capabilities} />
 
-        {/* Quick links (internal gallery only) — open app / dashboard / Genie /
-            data directly from the tile. */}
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          {links?.app && (
-            <QuickLink href={links.app} icon={DatabricksAppsBrandIcon} label="Open App" accent />
-          )}
-          {links?.dashboard && (
-            <QuickLink href={links.dashboard} icon={AIBIBrandIcon} label="Dashboard" />
-          )}
-          {links?.genie && (
-            <QuickLink href={links.genie} icon={GenieBrandIcon} label="Ask Genie" />
-          )}
-          {links?.data && (
-            <QuickLink href={links.data} icon={Database} label="Data" />
-          )}
-          <span className="ml-auto inline-flex items-center gap-1 text-[12px] font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
-            Details <ArrowUpRight className="h-3.5 w-3.5" />
-          </span>
-        </div>
+        {/* Live-resource quick links (internal gallery only). */}
+        {(links?.app || links?.dashboard || links?.genie || links?.data) && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {links?.app && (
+              <QuickLink href={links.app} icon={DatabricksAppsBrandIcon} label="Open App" accent />
+            )}
+            {links?.dashboard && (
+              <QuickLink href={links.dashboard} icon={AIBIBrandIcon} label="Dashboard" />
+            )}
+            {links?.genie && (
+              <QuickLink href={links.genie} icon={GenieBrandIcon} label="Ask Genie" />
+            )}
+            {links?.data && (
+              <QuickLink href={links.data} icon={Database} label="Data" />
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

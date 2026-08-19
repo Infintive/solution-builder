@@ -51,6 +51,14 @@ Python version to match serverless; a 3.11 client fails the pandas_udf step):
   DATABRICKS_CONFIG_PROFILE=field-eng \
       python generate_data.py --catalog dbdemos_templates --schema aibi_marketing_campaign
 """
+
+# SQL safety: when a SQL statement needs a runtime TEXT value (a column/table
+# COMMENT, a WHEN/WHERE literal, an inserted string), pass it as a bound
+# PARAMETER — spark.sql("... IS :txt", args={"txt": val}) — never f-string it
+# into a '...' literal. Spark quotes/escapes the value, so an apostrophe
+# ("O'Brien", "customer's") is safe with no manual '' escaping. Identifiers
+# (catalog/schema/table/column) are structure, not values — they stay in the
+# f-string (backtick-quote them).
 import argparse
 import datetime as dt
 import os

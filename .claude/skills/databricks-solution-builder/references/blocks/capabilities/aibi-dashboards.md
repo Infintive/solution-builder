@@ -26,7 +26,8 @@ Three-beat: **what changed** (counters + trend) → **why it matters** (breakdow
 A user opening the dashboard cold should grasp the story without needing a guide. Three devices, use them where they earn their place — don't paste them everywhere:
 
 - **Page-header text widget** (top of every page, full-width markdown). Names the event and points the reader at what to look at on this page. A few sentences — lifted from the README in spirit, not duplicated verbatim.
-- **Frame descriptions** on the chart that needs a caption to read correctly — a forecast where the vertical-line marker would otherwise be opaque, a counter-argument chart whose meaning depends on context, a sankey whose punchline is the convergence pattern. One short sentence. Set `frame.description` AND `frame.showDescription: true` (the flag is OFF by default — descriptions don't render without it; common silent-failure). Skip captions on widgets that read themselves (a sorted bar chart with clear labels doesn't need words).
+- **Widget titles** are the card's *name* — set `frame.title` (the title-as-answer) AND `frame.showTitle: true` on every widget whose name should show. **`showTitle` is OFF by default**, so a counter/KPI authored with just a `title` (or with only an `encodings.value.displayName`) renders as a bare number with **no name on the card** — a common silent-failure, especially on aggregation counters. Every counter in the example dashboards sets both.
+- **Frame descriptions** on the chart that needs a caption to read correctly — a forecast where the vertical-line marker would otherwise be opaque, a counter-argument chart whose meaning depends on context, a sankey whose punchline is the convergence pattern. One short sentence. Set `frame.description` AND `frame.showDescription: true` (the flag is OFF by default — descriptions don't render without it; the same silent-failure as `showTitle`). Skip captions on widgets that read themselves (a sorted bar chart with clear labels doesn't need words).
 - **Section dividers**: thin markdown `text` widgets (1-row tall, full-width) with `## Heading`. Use to separate logical beats when a page has more than one act.
 
 ## What Dashboards Can Do
@@ -36,6 +37,8 @@ Dashboards are SQL-backed: each widget draws from a dataset (a SQL query on Gold
 ### Widget Types
 
 Every chart needs **two axes** — a dimension (what you group by) and a measure (the aggregated number). Specifying only one axis is invalid; the widget won't render. Vertical vs horizontal bar is just which axis carries the quantitative measure.
+
+> **Blank-widget gotcha (verify after building).** A widget can return rows and still render empty when an `encodings.*.fieldName` doesn't exactly match a `query.fields[].name` (the aliased output, e.g. `sum(spend)`, not the raw `spend`). After deploying, confirm every widget shows data. The exact field-binding contract + the final checklist for this live in the `databricks-aibi-dashboards` DAS — follow them there.
 
 | Widget | Encodings | Use when |
 |--------|-----------|----------|
@@ -150,7 +153,7 @@ Dashboard design decisions flow backward into the pipeline spec. When specifying
 2. **Filter columns**: Every dimension you want to filter on must be present in every dataset that should respond to that filter. Plan filter columns before writing the pipeline spec.
 3. **Categorical cardinality**: Chart color/groups work with 3-8 distinct values. If a dimension has 50+ values, aggregate to a higher level (e.g., sub-category → category) or use a table instead.
 4. **Metric columns**: Keep raw numeric columns (revenue, count, rate) — the dashboard can SUM, AVG, MIN, MAX at render time.
-5. **Table names only in dataset queries**: Use bare table names (e.g., `SELECT * FROM gold_daily_summary`), not fully qualified `catalog.schema.table`. The dashboard is deployed with `--dataset-catalog` and `--dataset-schema` flags which resolve the catalog/schema at deploy time.
+5. **Table names only in dataset queries**: Use bare table names (e.g., `SELECT * FROM gold_daily_summary`), not fully qualified `catalog.schema.table`. The dashboard is deployed with `--dataset-catalog` and `--dataset-schema` flags (on BOTH `lakeview create` AND `lakeview update` — update strips them otherwise) which resolve the catalog/schema at deploy time.
 
 ## Spec-Writing Guide
 
@@ -168,11 +171,12 @@ The spec describes WHAT to show. The `databricks-aibi-dashboards` Databricks Age
 
 ## Pitfalls
 
-- **Don't put catalog/schema in the queries and always set the --dataset-catalog and --dataset-schema flag creating a lakeview dashboard** 
+- **Don't put catalog/schema in the queries and always set the --dataset-catalog and --dataset-schema flag when running `databricks lakeview create` AND `databricks lakeview update`** (update strips catalog/schema otherwise) 
 - **"Everything is fine" dashboards** — ensure data shows the anomaly.
 - **Rows that don't fill 12** — gaps break the grid. Every row's widget widths must sum to 12.
 - **Counters without comparison** — "$1.8M" alone means nothing. Show vs. baseline or MRR or ARR.
 - **Inconsistent color** — same category = same color across all charts.
+- **Titleless cards** — a card's name renders only with `frame.showTitle: true` (OFF by default) set alongside `frame.title`; without it a counter shows a bare number with no label. (Details + checklist in the `databricks-aibi-dashboards` DAS.)
 - **Generic titles** — "Revenue" tells nothing. "Revenue Up 12% YoY" tells everything.
 - **Missing filter columns** — if a dataset lacks the filter column, that widget won't respond to the filter.
 - **Too-fine cardinality in charts** — 50 categories in a bar chart is unreadable, instead get the top ~6 then aggregate as "other" using a window function.

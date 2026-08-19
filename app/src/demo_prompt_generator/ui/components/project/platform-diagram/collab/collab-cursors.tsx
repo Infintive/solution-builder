@@ -9,7 +9,7 @@
  */
 
 import { useStore } from "@xyflow/react";
-import type { CollabMember } from "./use-collab";
+import type { CollabMember } from "./use-collab-yjs";
 
 /** A single labeled cursor. */
 function Cursor({ member }: { member: CollabMember }) {

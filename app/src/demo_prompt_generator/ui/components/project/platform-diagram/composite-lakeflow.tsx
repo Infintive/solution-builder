@@ -4,16 +4,16 @@
  * Spark Declarative Pipeline) plus its medallion-cylinder pieces and the named
  * left-side input ports. First of several composite blocks.
  */
-import { memo, useContext, Fragment, type ReactNode } from "react";
+import { memo, useContext, useState, Fragment, type ReactNode } from "react";
 import { type NodeProps } from "@xyflow/react";
 import { DATABRICKS_ICONS, type DatabricksIconName } from "../../databricks-icons";
 import { RotatableCard, baseSize, DropTargetContext, EditModeContext, cardStyle, ConnectionDot, dotsOn, type DotSpec, type NodeData } from "./shared";
 import { type Side } from "./edge-routing";
 
 export const MEDALLION = [
-  { label: "Bronze", color: "#cd7f32" },
-  { label: "Silver", color: "#9ca3af" },
-  { label: "Gold", color: "#d4a72c" },
+  { key: "bronze", label: "Bronze", color: "#cd7f32" },
+  { key: "silver", label: "Silver", color: "#9ca3af" },
+  { key: "gold", label: "Gold", color: "#d4a72c" },
 ] as const;
 
 // The 3 left input ports. Lakeflow Connect + Zerobus are shown as vertical
@@ -81,14 +81,15 @@ function IngestBox({ icon, iconEl, label, bandColor, first }: { icon?: Databrick
 
 /** A DATABASE glyph for a medallion layer: the classic cylinder ("tube") DB
  *  shape — top ellipse, body, two stacked "data band" ellipses — filled in the
- *  layer color, with the layer name underneath. */
-export function DbTable({ label, color }: { label: string; color: string }) {
+ *  layer color, with the layer name underneath and an optional short caption
+ *  (from a `*_desc` param) below that. */
+export function DbTable({ label, color, desc }: { label: string; color: string; desc?: string }) {
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center gap-[2px]">
       {/* Grows with the block, but capped so the cylinders don't get so tall
           they widen past each other (aspect-locked SVG). Past the cap they
           just sit centered in the extra space. */}
-      <svg viewBox="0 0 24 28" className="min-h-0 w-auto flex-1" preserveAspectRatio="xMidYMid meet" style={{ maxHeight: 48, overflow: "visible" }}>
+      <svg viewBox="0 0 24 28" className="min-h-0 w-auto flex-1" preserveAspectRatio="xMidYMid meet" style={{ maxHeight: 38, overflow: "visible" }}>
         {/* body */}
         <path d="M2 5 V21 a10 4 0 0 0 20 0 V5" fill={`${color}26`} stroke={color} strokeWidth="1.4" strokeLinejoin="round" />
         {/* inner data bands */}
@@ -100,19 +101,37 @@ export function DbTable({ label, color }: { label: string; color: string }) {
       <span className="text-[7.5px] font-bold uppercase tracking-wide leading-none" style={{ color }}>
         {label}
       </span>
+      {desc && (
+        <span
+          className="mt-[1px] max-w-[72px] text-center text-[6.5px] leading-tight text-muted-foreground"
+          style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+          title={desc}
+        >
+          {desc}
+        </span>
+      )}
     </div>
   );
 }
 
-/** The bronze → silver → gold cylinders, packed close together with a thin
- *  light connector bar between each (the medallion flow). */
-export function MedallionRow() {
+/** The bronze → silver → gold cylinders with a thin light connector bar between
+ *  each (the medallion flow). Spacing WIDENS when any layer has a `*_desc` param
+ *  so the captions get room. `params` carries the optional `bronze_desc` /
+ *  `silver_desc` / `gold_desc` captions. */
+export function MedallionRow({ params }: { params?: Record<string, boolean | string> } = {}) {
+  const descOf = (k: string): string | undefined => {
+    const v = params?.[`${k}_desc`];
+    return typeof v === "string" && v.trim() ? v : undefined;
+  };
+  const hasDesc = !!(descOf("bronze") || descOf("silver") || descOf("gold"));
   return (
-    <div className="flex min-h-0 flex-1 items-stretch justify-center gap-[2px]">
+    <div className={`flex min-h-0 flex-1 items-stretch justify-center ${hasDesc ? "gap-3" : "gap-2"}`}>
       {MEDALLION.map((m, i) => (
         <Fragment key={m.label}>
-          {i > 0 && <span className="my-auto h-[2px] w-3 shrink-0 rounded-full bg-muted-foreground/25" />}
-          <DbTable label={m.label} color={m.color} />
+          {/* Connector bar — wider than before so the layers read as spaced-out
+              stages, not crammed together. */}
+          {i > 0 && <span className="my-auto h-[2px] w-6 shrink-0 rounded-full bg-muted-foreground/25" />}
+          <DbTable label={m.label} color={m.color} desc={descOf(m.key)} />
         </Fragment>
       ))}
     </div>
@@ -123,7 +142,7 @@ export const LakeflowBlock = memo(function LakeflowBlock({ data, selected }: Nod
   const d = data as NodeData;
   const isDropTarget = useContext(DropTargetContext) === d.nodeId;
   const editMode = useContext(EditModeContext);
-  const nat = baseSize(d.component);
+  const nat = baseSize(d.component, d.params);
   const card = cardStyle(d, { borderColor: `${d.bandColor}66`, radius: 16 });
   return (
     <RotatableCard
@@ -143,6 +162,9 @@ export const LakeflowBlock = memo(function LakeflowBlock({ data, selected }: Nod
       onContext={(e) => { e.preventDefault(); d.onContext(d.nodeId, e.clientX, e.clientY); }}
     >
       <LakeflowPorts editMode={editMode} selected={!!selected} isDropTarget={isDropTarget} />
+      {/* Title legend on the top border (sibling of the overflow-hidden content
+          so it can straddle the edge). */}
+      <LakeflowHeader d={d} mask={card.hasFill ? (d.fillColor as string) : "var(--card)"} />
 
       <div
         onClick={() => d.onSelect(d.nodeId)}
@@ -192,6 +214,61 @@ const LAKEFLOW_DOTS: DotSpec[] = [
   { id: "bl", side: "b", frac: 0.08 },
 ];
 
+// The catalog labels we treat as "not a custom title" — the block's own default
+// name, which should render as the DEFAULT header rather than verbatim. A user
+// title (anything else, incl. empty→cleared) shows as typed / falls back.
+const LAKEFLOW_DEFAULT_TITLE = "Lakeflow: Data ingestion and processing";
+const LAKEFLOW_CATALOG_LABELS = new Set(["Lakeflow", "Lakeflow + Genie"]);
+
+/** The Lakeflow block's editable title — a LEGEND on the top border (like the
+ *  medallion / a box), not an inner line. Default: "Lakeflow: Data ingestion and
+ *  processing" (shown when the label is unset or still the catalog default).
+ *  Double-click (edit mode) to rename — stored as the node label via onRename;
+ *  committing empty restores the default. Rendered as a card-level sibling of the
+ *  (overflow-hidden) content so it can straddle the border; `mask` paints the
+ *  strip's background to hide the border line behind the text. */
+export function LakeflowHeader({ d, mask }: { d: NodeData; mask: string }) {
+  const editMode = useContext(EditModeContext);
+  const label = d.component.label;
+  const isDefault = !label || LAKEFLOW_CATALOG_LABELS.has(label);
+  const title = isDefault ? LAKEFLOW_DEFAULT_TITLE : label;
+  const [editing, setEditing] = useState<string | null>(null);
+  const commit = () => {
+    if (editing !== null) { d.onRename(d.nodeId, editing.trim()); setEditing(null); }
+  };
+  return (
+    <div
+      onClick={(e) => { e.stopPropagation(); d.onSelect(d.nodeId); }}
+      onDoubleClick={editMode ? (e) => { e.stopPropagation(); setEditing(isDefault ? "" : title); } : undefined}
+      title={editMode ? "Double-click to edit title" : undefined}
+      className="absolute inset-x-0 top-0 z-10 flex h-4 -translate-y-1/2 items-center"
+      style={{ cursor: "text" }}
+    >
+      <div className="ml-3 flex items-baseline gap-1.5" style={{ background: mask, padding: "0 6px", borderRadius: 6 }}>
+        {editing !== null ? (
+          <input
+            autoFocus
+            value={editing}
+            onChange={(e) => setEditing(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => { if (e.key === "Enter") commit(); else if (e.key === "Escape") setEditing(null); e.stopPropagation(); }}
+            onClick={(e) => e.stopPropagation()}
+            placeholder={LAKEFLOW_DEFAULT_TITLE}
+            className="w-64 bg-transparent text-[12px] font-bold leading-none text-foreground outline-none"
+          />
+        ) : isDefault ? (
+          <>
+            <span className="shrink-0 text-[12px] font-bold leading-none text-foreground">Lakeflow:</span>
+            <span className="whitespace-nowrap text-[9px] font-medium leading-none text-muted-foreground">Data ingestion and processing</span>
+          </>
+        ) : (
+          <span className="truncate text-[12px] font-bold leading-none text-foreground">{title}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** The Lakeflow inner content (ingest rail + SDP/medallion panel), WITHOUT the
  *  card chrome — so it can be embedded standalone or stacked above Genie Code
  *  in the combined block. An optional `footer` renders inside the RIGHT column,
@@ -211,26 +288,25 @@ export function LakeflowBody({ d, footer }: { d: NodeData; footer?: ReactNode })
         <IngestBox iconEl={<StackedFiles />} label="" bandColor={d.bandColor} />
       </div>
 
-      {/* RIGHT: title + SDP tables + Open Format underneath them. */}
+      {/* RIGHT: SDP panel. The block TITLE is a legend on the card's top border
+          (rendered by the block, not here). */}
       <div className="flex min-h-0 flex-1 flex-col p-2.5">
-        <div className="mb-1.5 flex shrink-0 flex-col leading-tight">
-          <span className="truncate text-[8px] font-medium uppercase tracking-wide text-muted-foreground">Data ingestion and processing</span>
-          <span className="text-[12px] font-bold text-foreground">{d.component.label}</span>
-        </div>
         <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-border/60 bg-background/60 p-2">
+          {/* SDP title row — the open-format logos (Delta · Iceberg) sit at the
+              RIGHT end of this row, aligned with the "Spark Declarative Pipelines"
+              title (replaces the old "Open Format" footer). */}
           <div className="mb-1.5 flex shrink-0 items-center gap-1.5">
             {(() => { const I = DATABRICKS_ICONS.sdpBrand; return <I className="h-4 w-4 shrink-0" />; })()}
-            <span className="truncate text-[9.5px] font-bold leading-tight text-foreground">Spark Declarative Pipelines</span>
+            {/* Title shrinks (min-w-0 + truncate) so the open-format logos on the
+                right always stay inside the panel, even in the narrow block. */}
+            <span className="min-w-0 flex-1 truncate text-[9.5px] font-bold leading-tight text-foreground">Spark Declarative Pipelines</span>
+            <span className="flex shrink-0 items-center gap-1">
+              {(() => { const I = DATABRICKS_ICONS.deltaLakeLogo; return <I className="h-3.5 w-3.5" />; })()}
+              {(() => { const I = DATABRICKS_ICONS.icebergLogo; return <I className="h-3.5 w-3.5" />; })()}
+            </span>
           </div>
           {/* Medallion grows to absorb extra height on resize. */}
-          <MedallionRow />
-
-          {/* Open Format — fixed small height, stays put as the block grows. */}
-          <div className="mt-1.5 flex shrink-0 items-center gap-2 border-t border-border/60 pt-1.5">
-            <span className="text-[8px] font-semibold uppercase tracking-wider text-muted-foreground">Open Format</span>
-            {(() => { const I = DATABRICKS_ICONS.deltaLakeLogo; return <I className="h-3.5 w-3.5" />; })()}
-            {(() => { const I = DATABRICKS_ICONS.icebergLogo; return <I className="h-3.5 w-3.5" />; })()}
-          </div>
+          <MedallionRow params={d.params} />
         </div>
         {/* Optional footer (e.g. the Genie strip) — under the SDP panel, within
             the right column, so it doesn't span under the ingest rail. */}

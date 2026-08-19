@@ -98,7 +98,7 @@
     },
     {
       "name": "ds_risk",
-      "displayName": "Risk-adjusted return \u2014 fund vs benchmark",
+      "displayName": "Risk-adjusted return — fund vs benchmark",
       "queryLines": [
         "SELECT period, sort_order, fund_sharpe, fund_volatility, fund_return,\n",
         "  bench_sharpe, bench_volatility, bench_return\n",
@@ -144,7 +144,7 @@
             "name": "title",
             "multilineTextboxSpec": {
               "lines": [
-                "# AI Growth Fund \u2014 winning, but how exposed?\n\nOur flagship fund is beating its benchmark by riding the AI rally. The catch: a series of reorgs piled it into AI names \u2014 and one major pivot took core-AI exposure from ~30% to ~80%. Great returns, but how much risk are we carrying if the AI trade turns?"
+                "# AI Growth Fund — winning, but how exposed?\n\nOur flagship fund is beating its benchmark by riding the AI rally. The catch: a series of reorgs piled it into AI names — and one major pivot took core-AI exposure from ~30% to ~80%. Great returns, but how much risk are we carrying if the AI trade turns?"
               ]
             }
           },
@@ -191,10 +191,7 @@
                       "places": 0
                     }
                   },
-                  "formatTemplate": "+{{ @formatted }}%",
-                  "color": {
-                    "default": "#2E6CB5"
-                  }
+                  "formatTemplate": "+{{ @formatted }}%"
                 },
                 "period": {
                   "fieldName": "week"
@@ -249,10 +246,7 @@
                       "places": 0
                     }
                   },
-                  "formatTemplate": "+{{ @formatted }} pts",
-                  "color": {
-                    "default": "#5CBE8A"
-                  }
+                  "formatTemplate": "+{{ @formatted }} pts"
                 },
                 "period": {
                   "fieldName": "week"
@@ -306,9 +300,6 @@
                       "type": "max",
                       "places": 0
                     }
-                  },
-                  "color": {
-                    "default": "#E0795A"
                   }
                 },
                 "period": {
@@ -462,7 +453,7 @@
               ],
               "frame": {
                 "showTitle": true,
-                "title": "Cumulative return \u2014 AI Growth Fund vs benchmark (indexed to 100)"
+                "title": "Cumulative return — AI Growth Fund vs benchmark (indexed to 100)"
               }
             }
           },
@@ -535,7 +526,7 @@
             "name": "risk_hdr",
             "multilineTextboxSpec": {
               "lines": [
-                "## How much could a bad day cost?\n\n**Value at Risk** puts a dollar figure on the downside (on a **$100M** book): on 95% of days the fund won't lose more than the figure below \u2014 but concentrating into AI pushed that number up. The chart shows which holdings actually reward their risk: **up** = more return, **right** = more risk, **size** = position weight. Best is top-left; the fund's AI names (coral) sit to the right."
+                "## How much could a bad day cost?\n\n**Value at Risk** puts a dollar figure on the downside (on a **$100M** book): on 95% of days the fund won't lose more than the figure below — but concentrating into AI pushed that number up. The chart shows which holdings actually reward their risk: **up** = more return, **right** = more risk, **size** = position weight. Best is top-left; the fund's AI names (coral) sit to the right."
               ]
             }
           },
@@ -580,10 +571,7 @@
                       "places": 1
                     }
                   },
-                  "formatTemplate": "-{{ @formatted }}",
-                  "color": {
-                    "default": "#E0795A"
-                  }
+                  "formatTemplate": "-{{ @formatted }}"
                 }
               },
               "frame": {
@@ -633,10 +621,7 @@
                       "places": 1
                     }
                   },
-                  "formatTemplate": "-{{ @formatted }}",
-                  "color": {
-                    "default": "#C9483A"
-                  }
+                  "formatTemplate": "-{{ @formatted }}"
                 }
               },
               "frame": {
@@ -704,14 +689,14 @@
                     "type": "quantitative",
                     "domainMin": 0
                   },
-                  "displayName": "\u2190 safer        Risk / volatility (%)        riskier \u2192"
+                  "displayName": "← safer        Risk / volatility (%)        riskier →"
                 },
                 "y": {
                   "fieldName": "annualized_return",
                   "scale": {
                     "type": "quantitative"
                   },
-                  "displayName": "\u2191 better        Return (%/yr)"
+                  "displayName": "↑ better        Return (%/yr)"
                 },
                 "color": {
                   "fieldName": "ai_exposure",
@@ -778,7 +763,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Risk vs return by holding \u2014 each bubble is a stock (hover for details)"
+                "title": "Risk vs return by holding — each bubble is a stock (hover for details)"
               }
             }
           },
@@ -899,7 +884,7 @@
             "name": "c_title",
             "multilineTextboxSpec": {
               "lines": [
-                "# Why the strong returns come with risk\n\nThe outperformance is concentrated in AI. A series of reorgs \u2014 capped by one major pivot \u2014 sold the fund's defensives and bought AI, taking core-AI exposure from ~30% to ~80%. That single decision drove the returns and the risk at the same time."
+                "# Why the strong returns come with risk\n\nThe outperformance is concentrated in AI. A series of reorgs — capped by one major pivot — sold the fund's defensives and bought AI, taking core-AI exposure from ~30% to ~80%. That single decision drove the returns and the risk at the same time."
               ]
             }
           },
@@ -1034,7 +1019,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Portfolio reorganizations \u2014 what was sold and bought"
+                "title": "Portfolio reorganizations — what was sold and bought"
               }
             }
           },
@@ -1050,7 +1035,7 @@
             "name": "c_step2",
             "multilineTextboxSpec": {
               "lines": [
-                "## 2. Concentration stepped up at the reorg\n\nCore-AI exposure was steady near 30%, drifted up with two tilts, then **jumped to ~80% at the August pivot** \u2014 and has stayed there. The risk is now structural, not incidental."
+                "## 2. Concentration stepped up at the reorg\n\nCore-AI exposure was steady near 30%, drifted up with two tilts, then **jumped to ~80% at the August pivot** — and has stayed there. The risk is now structural, not incidental."
               ]
             }
           },
@@ -1149,7 +1134,7 @@
               ],
               "frame": {
                 "showTitle": true,
-                "title": "Core-AI concentration over time \u2014 jumps from ~30% to ~80% at the August pivot"
+                "title": "Core-AI concentration over time — jumps from ~30% to ~80% at the August pivot"
               }
             }
           },
@@ -1165,7 +1150,7 @@
             "name": "c_step3",
             "multilineTextboxSpec": {
               "lines": [
-                "## 3. Is the risk paying off \u2014 so far? (Sharpe)\n\nThe bet has worked *to date*: after the major pivot the fund's volatility **rose** (from ~23% to ~29%), but returns rose even faster, so its Sharpe is strong (~2.1, above the benchmark's ~1.76). The caution: that reward rides on a single, undiversified ~77% core-AI position \u2014 the higher volatility and Value-at-Risk are the price of it, and they bite hard if the AI trade turns."
+                "## 3. Is the risk paying off — so far? (Sharpe)\n\nThe bet has worked *to date*: after the major pivot the fund's volatility **rose** (from ~23% to ~29%), but returns rose even faster, so its Sharpe is strong (~2.1, above the benchmark's ~1.76). The caution: that reward rides on a single, undiversified ~77% core-AI position — the higher volatility and Value-at-Risk are the price of it, and they bite hard if the AI trade turns."
               ]
             }
           },
@@ -1282,7 +1267,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Risk-adjusted return \u2014 before vs after the major pivot"
+                "title": "Risk-adjusted return — before vs after the major pivot"
               }
             }
           },
@@ -1357,7 +1342,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Daily return distribution (post-pivot) \u2014 the downside tail"
+                "title": "Daily return distribution (post-pivot) — the downside tail"
               }
             }
           },
@@ -1373,7 +1358,7 @@
             "name": "c_step4",
             "multilineTextboxSpec": {
               "lines": [
-                "## 4. The fund is far more exposed to Technology than the benchmark\n\n~87% Technology vs ~34% in the benchmark, and over half the book in core-AI names \u2014 a turn in the AI trade would hit it disproportionately."
+                "## 4. The fund is far more exposed to Technology than the benchmark\n\n~87% Technology vs ~34% in the benchmark, and over half the book in core-AI names — a turn in the AI trade would hit it disproportionately."
               ]
             }
           },
@@ -1457,7 +1442,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Sector allocation \u2014 fund vs benchmark (Technology is the overweight)"
+                "title": "Sector allocation — fund vs benchmark (Technology is the overweight)"
               }
             }
           },
@@ -1528,7 +1513,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Weight by AI exposure \u2014 80% core AI"
+                "title": "Weight by AI exposure — 80% core AI"
               }
             }
           },
@@ -1544,7 +1529,7 @@
             "name": "c_step5",
             "multilineTextboxSpec": {
               "lines": [
-                "## 5. The news flow on those AI names\n\nRecent sentiment on the fund's core-AI holdings \u2014 the qualitative signal a manager watches for an early turn."
+                "## 5. The news flow on those AI names\n\nRecent sentiment on the fund's core-AI holdings — the qualitative signal a manager watches for an early turn."
               ]
             }
           },
