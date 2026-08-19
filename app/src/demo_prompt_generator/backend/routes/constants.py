@@ -6,7 +6,7 @@ import json
 import logging
 from enum import Enum
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -80,6 +80,18 @@ class SuggestCapabilitiesRequest(BaseModel):
     # capabilities that match the user's text — NO use-case ideas/story. The
     # stream emits only `capabilities` (+ `reasoning`); never `count`/`idea`.
     capabilities_only: bool = False
+    # "Use existing data" grounding: the fully-qualified UC tables the user
+    # picked (catalog.schema.table). When present, we inject their scanned
+    # schema + light stats + a few sample rows (from the process-level cache
+    # warmed by POST /grounding/scan) into the prompt and REQUIRE the story to
+    # be built on ONLY these tables. Read entirely by `_append_shared_context`.
+    grounding_tables: list[str] | None = None
+    # "Use existing data" opt-in. When False (default) the grounded flow proposes
+    # READ-ONLY analytics only (dashboards/Genie/metric-views). When True the demo
+    # may create its OWN auxiliary tables, so write-needing capabilities (apps,
+    # lakebase, ML, and synthetic-data-gen for the aux tables) become fair game —
+    # the user's real tables stay read-only regardless.
+    allow_data_write: bool = False
 
 
 class UseCaseIdea(BaseModel):
@@ -204,14 +216,228 @@ def _load_platform_architecture() -> str:
     return ""
 
 
+def _build_grounded_system_prompt(
+    platform_context: str,
+    allow_data_write: bool = False,
+    task_mode: str = "cold",
+    idea_count: int | None = None,
+) -> str:
+    """System prompt for the "Use existing data" flow.
+
+    The demo is built DIRECTLY on the user's REAL Unity Catalog tables, READ-ONLY
+    — no data is generated or copied. Dashboards, Genie, metric views, etc. query
+    those exact tables. Propose analytics use-cases that run on the real data as
+    it is; there is no synthetic catalyst to craft.
+
+    `allow_data_write` reflects the user's opt-in: when True the demo may create
+    its OWN auxiliary tables, so write-needing capabilities are allowed (the real
+    tables stay read-only). When False the capability set is read-only analytics.
+
+    `task_mode` selects the generation shape:
+      - "cold"    — fresh ideation (the 3-tier count logic below applies).
+      - "refine"  — rewrite ONE existing story per the user's request; count=1.
+      - "refresh" — minimally rewrite `idea_count` existing stories to fit a new
+                    capability set; count=`idea_count`.
+    For refine/refresh a MODE OVERRIDE is appended LAST so it wins over the
+    3-tier count logic (the grounding + fit + why rules still apply). Without it
+    the grounded LLM ignores the refine/refresh and regenerates a full new set,
+    which on the client wipes/replaces the OTHER cards the user didn't touch.
+    """
+    if allow_data_write:
+        capability_rules = """## Capability Selection Rules (grounded, data-write opted in)
+- **Keep it LEAN.** Start minimal; add a capability only when the use-case needs it.
+- The read-only backbone still applies: "unity-catalog" + "aibi-dashboards" + "genie" + "genie-one" + "genie-code" over the user's real tables.
+- The user opted into letting the demo create its OWN auxiliary data, so write-needing capabilities are ALLOWED when a use-case calls for them: "metric-views", model training/serving, "knowledge-assistant"/"supervisor-agent" (doc Q&A), and even "databricks-apps"+"lakebase" (an action app). Any tables these create live in the DEMO's own catalog — the user's real tables above are STILL read-only.
+- You may include "synthetic-data-gen" ONLY to create AUXILIARY tables in the demo's own catalog (e.g. an app write-back table or ML labels) — never to regenerate or replace the user's real tables.
+- Almost always include talking track: "unity-catalog", "genie-one", "genie-code"."""
+    else:
+        capability_rules = """## Capability Selection Rules (read-only-on-real-data flow)
+- **Keep it LEAN.** Start minimal; add a capability only when the use-case needs it.
+- The default backbone is: "unity-catalog" + "aibi-dashboards" + "genie" + "genie-one" + "genie-code" — read-only analytics on the user's real tables.
+- **Do NOT include "synthetic-data-gen"** — the demo uses the real data, it does not generate any. **Do NOT include ingest capabilities** ("lakeflow-connect", "sdp", "zerobus-ingest") — the data already exists in Unity Catalog; there is no ingest/medallion beat to build.
+- Add heavier capabilities ONLY when the use-case clearly implies them AND the real data supports them, read-only: "metric-views" (governed metrics over the real tables), model training/serving (an ML/prediction angle trained on the real tables). **Avoid "databricks-apps"+"lakebase"** — the app's write-back action chain can't run against read-only customer tables.
+- **"knowledge-assistant" (KA) and "supervisor-agent" (MAS)** need unstructured docs — only when the topic centers on document Q&A.
+- Almost always include talking track: "unity-catalog", "genie-one", "genie-code"."""
+    base = f"""You are a Databricks solution architect. The user picked some of their OWN Unity Catalog tables, and the solution will be built DIRECTLY on those real tables — READ-ONLY. Nothing is generated, nothing is copied: the dashboards, Genie space, metric views, etc. query the user's actual tables in place. Your job is to propose valuable analytics use-cases that run on their real data exactly as it is.
+
+## Platform Architecture
+{platform_context}
+
+## Build directly on the real tables (read-only) — most important
+The user prompt includes a PROFILE of the real tables — per column: type, distinct count, null %, min/max range, mean/quartiles for numerics, and the top values for categoricals — and a DATA CAPABILITY SIGNALS summary (the time columns, measures, dimensions, and join keys the data actually has). Use both to find the use-cases the REAL data genuinely supports, and to RATE each idea's fit.
+
+- **Everything queries the real tables in place.** Reuse the real fully-qualified table + column names verbatim. The dashboards/Genie/metric-views read these exact tables — nothing is generated or duplicated.
+- **The story is whatever the data actually shows — do NOT fabricate a catalyst.** There is no synthetic spike/anomaly to design; the data is real. Propose use-cases that surface real value: a clear view of the business, a diagnostic that explains a real pattern by joining tables, a forward-looking read the data supports. If the data happens to contain a notable trend or outlier, great — lean on it; but never invent one.
+- Prefer a numeric measure + a time/date column + a categorical dimension the tables actually contain — that's what makes the dashboard/Genie use-case land, and it's exactly what earns a "Great" fit.
+- **When multiple tables were selected, prefer a use-case that JOINS them** on the keys shown in DATA CAPABILITY SIGNALS — a fact table joined to its dimensions is the strongest read. Reach across the related tables rather than anchoring on one; only fall back to a single table when no join key connects the selection.
+- A named persona + business framing + $/volume metric are great; tie them to the real entities and the magnitudes the profile actually shows (do not inflate beyond the data).
+
+## The use-case MUST run on these exact tables
+- Every idea must be expressible as read-only queries over the listed tables + their columns. Do NOT assume columns that aren't there, do NOT propose generating or copying data, and NEVER write to or modify the user's tables.
+- `datasources` MUST reference the real tables (their fully-qualified `catalog.schema.table` names from the profile), not made-up source systems.
+
+## Your Task
+1. **Assess the prompt specificity (3 tiers)** — the SCHEMA anchors the data model; the user's text (if any) is a STEER:
+   - **TIER 3 — VAGUE / EMPTY** (count=3): little or no typed text — the schema leads. Propose 3 DISTINCT, substantive use-cases that span a RANGE of analytical sophistication — NOT three variations of the same "spot a trend" story. Aim for a spread like: (a) an executive/descriptive view of the business, (b) a diagnostic deep-dive that explains a pattern by JOINING tables, and (c) a forward-looking angle the data can support — a forecast, a churn/propensity score, customer or product segmentation, an anomaly watch. Only propose (c)-style predictive/ML angles when the columns plausibly support them; otherwise offer a second diagnostic or operational angle instead.
+   - **TIER 2 — MODERATE** (count=2): a couple of sentences steering the focus. 2 contrasting angles that fit both the steer AND the schema.
+   - **TIER 1 — DETAILED** (count=1): a described story/persona/goal. 1 structured story, grounded in the real columns.
+   Default to TIER 3 when the text box is empty or vague.
+
+2. **Generate use-case ideas (detail scales with tier):**
+   - **TIER 3 (count=3):** Hook = 2-3 substantive sentences PLAIN TEXT (no headers, ≈45-65 words): name a persona/role, the real business situation or opportunity in their data, and the concrete payoff — enough that it reads like a real use-case, not a one-line teaser. Express it over the real tables/columns/joins. Keep it prose (no section headers) so it stays scannable on a card; the deeper detail belongs in `why`.
+     Example (spans TWO joined tables): {{"type": "idea", "title": "Regional revenue anomaly", "hook": "A RevOps lead needs to know which regions and product lines are actually driving revenue — and why last quarter's numbers wobbled. By joining orders to customers, they can track revenue by region and product over time, catch the West-region jump from three weeks ago, and trace it to a single product line. It turns a vague 'sales feel off' into a specific, shareable answer the team can act on each week.", "datasources": ["main.retail.orders", "main.retail.customers"], "fit": {{"tier": "Great", "reason": "trends orders.amount over order_date, joined to customers.region"}}, "why": "You'd finally get a straight answer to 'which regions and product lines are actually moving our revenue?' — and when something spikes, you could just ask why and know in seconds instead of waiting days for someone to pull the numbers. Since your orders already tie back to customers, you can slice sales by region and product without any extra data wrangling, so this is something you could stand up fast and lean on week to week."}}
+   - **TIER 2 (count=2):** Hook uses **Context** / **Discovery** / **Impact** sections separated by \\n. Context = persona + the business question over the schema; Discovery = the pattern/anomaly (expressed on real columns); Impact = the decision/action + a $/volume metric in realistic magnitudes.
+   - **TIER 1 (count=1):** Hook uses **Protagonist** / **Catalyst** / **Journey** / **Resolution** sections separated by \\n — a full narrative arc, with the catalyst + resolution expressed over the real tables/columns.
+
+   **Common rules for ALL tiers:**
+   - `title`: short punchy title (5-7 words).
+   - `datasources`: list EVERY real table the use-case touches (fully-qualified names from the profile) — NOT just one. When the user selected several related tables (see the join keys in DATA CAPABILITY SIGNALS), PREFER a use-case that SPANS them — a fact joined to its dimensions is the strongest read. Build each idea on a COHERENT SUBSET (typically 2–6 related tables — a fact + the dimensions/keys it joins to), never a single lonely table when related ones exist, and never dump all of them. Different ideas MAY center on different subsets.
+   - Keep the table + column names faithful; everything queries the real tables in place.
+   - `fit` (REQUIRED on every idea): rate how well the user's REAL data supports THIS read-only use-case, using the DATA CAPABILITY SIGNALS. A CONSULTATION signal for the user — which ideas their data backs best — NOT a gate.
+     - `fit.tier` is one of exactly: `"Great"` (the real data fully supports it — the measure, time column, dimension, and any needed join key are all present), `"Good"` (supported but partial — e.g. a key column is sparse/often-null, the time span is short, or a needed dimension is coarse), or `"Possible"` (the data only weakly supports it — the core entity/measure is thin or barely present, so you'd be stretching what's there).
+     - `fit.reason` is ONE short clause (≤12 words) naming the REAL tables/columns the idea uses, e.g. "trends orders.amount over order_date by region". For Good/Possible, name the limitation, e.g. "customer region is 60% null" or "only 3 months of history".
+     - Be HONEST — do not inflate every idea to Great. A varied, truthful spread is what makes this useful.
+   - `why` (REQUIRED): 2–4 sentences, CONVERSATIONAL and casual (write to the user as "you"), on the VALUE you'd get from running this USE-CASE on your data — shown when the user expands the idea. Lead with the payoff: the question it finally answers, the decision or action it unlocks, what you'd stop guessing about or doing by hand. Mention their real tables/columns naturally (because they already have X and Y, you can…), but keep it about the business value, NOT the mechanics. Do NOT say "demo" or "wow moment", do NOT list Databricks product names, do NOT describe chart types. Talk like a helpful colleague pointing out an opportunity, not a sales deck.
+
+   NOTE: All ideas share the SAME capabilities.
+
+3. **Select capabilities** that apply to ALL ideas.
+
+{capability_rules}
+
+## Output Format (LINE-DELIMITED JSON - ONE JSON OBJECT PER LINE)
+Output each item on its own line as valid JSON. Do NOT wrap in an array or object.
+FIRST: {{"type": "count", "count": 3}}
+Then one line per idea: {{"type": "idea", "title": "...", "hook": "...", "datasources": [...], "fit": {{"tier": "Great|Good|Possible", "reason": "..."}}, "why": "2-4 casual, conversational sentences on the VALUE you'd get from this use-case on your data (payoff + what it unlocks, grounded in your real tables — no 'demo'/product names/chart talk)"}}
+  **Emit the ideas BEST-FIT-FIRST** — the highest-fit idea (Great before Good before Possible) on the FIRST idea line, so the user sees the strongest option at the top.
+Then: {{"type": "capabilities", "capabilities": [...]}}
+Finally: {{"type": "reasoning", "text": "1-2 sentences: how the real tables flow through the selected capabilities."}}"""
+
+    if task_mode == "refine":
+        base += """
+
+## ⚠️ MODE OVERRIDE — SINGLE-IDEA REFINE (takes precedence over the 3-tier logic above)
+The user is looking at several stories and asked to REFINE exactly ONE of them (given in the user prompt with their refinement request). This is NOT a fresh ideation pass.
+- Return **EXACTLY 1 idea** — the refined version of that one story. **count = 1.**
+- Do NOT generate alternatives, do NOT re-pitch the other stories, do NOT propose 2-3 ideas. Only the single refined idea.
+- Keep what already works in that story; apply the user's refinement request; keep it grounded in the SAME real tables (adjust the table subset only if the request truly calls for it).
+- UPGRADE the detail tier: plain-text hook → **Context/Discovery/Impact** sections; already-sectioned → **Protagonist/Catalyst/Journey/Resolution**. Still emit `fit` + `why`.
+- Output: `{"type":"count","count":1}` line, then EXACTLY ONE `{"type":"idea",...}` line, then the `capabilities` line, then the `reasoning` line. Nothing else."""
+    elif task_mode == "refresh" and idea_count:
+        base += f"""
+
+## ⚠️ MODE OVERRIDE — MINIMAL CAPABILITY REFRESH (takes precedence over the 3-tier logic above)
+The user has {idea_count} stor{"y" if idea_count == 1 else "ies"} on screen and just changed the capability mix. Do a MINIMAL rewrite — this is NOT a fresh ideation pass.
+- Return **EXACTLY {idea_count} idea{"" if idea_count == 1 else "s"}** — the SAME stories, rewritten only as needed. **count = {idea_count}.**
+- Keep each story's TITLE and core narrative arc; only adjust the hook + datasources to reflect the added/removed capabilities. Match each story's existing detail tier.
+- Keep them grounded in the real tables; still emit `fit` + `why`.
+- Output: `{{"type":"count","count":{idea_count}}}` line, then EXACTLY {idea_count} `idea` line{"" if idea_count == 1 else "s"} (same order as given), then `capabilities`, then `reasoning`. Nothing else."""
+
+    return base
+
+
+def _capability_delta(
+    mandatory_list: str, previous_capabilities: list[str] | None
+) -> tuple[str, str, str]:
+    """Compute the capability diff for a refresh prompt → (prev, added, removed)
+    display strings. `mandatory_list` is the comma-joined NEW selected set;
+    `previous_capabilities` is what the on-screen ideas were generated for.
+    Shared by the grounded + non-grounded refresh branches so the delta the
+    model is told to act on is computed identically in both."""
+    prev = set(previous_capabilities or [])
+    new = {m.strip() for m in mandatory_list.split(",") if m.strip()}
+    prev_caps = ", ".join(previous_capabilities or []) or "(none)"
+    added = ", ".join(sorted(new - prev)) or "(none)"
+    removed = ", ".join(sorted(prev - new)) or "(none)"
+    return prev_caps, added, removed
+
+
+def _build_grounded_user_prompt(
+    body: SuggestCapabilitiesRequest,
+    mandatory_list: str,
+    excluded_list: str,
+    cap_list: str,
+) -> str:
+    """User prompt for the grounded flow. The real-table PROFILE is appended by
+    `_append_grounding_tables` (via `_append_shared_context`), so here we just
+    frame the (optional) typed steer / refine-target / refresh-set + the
+    capability constraints. The system prompt's MODE OVERRIDE (refine/refresh)
+    pairs with the matching block here so a grounded refine/refresh honors the
+    request instead of regenerating a full new set."""
+    steer = body.prompt.strip()
+    # The user's typed steer is context for refine/refresh too (the ideas were
+    # generated under it) — mirror the non-grounded builder, which keeps it.
+    steer_prefix = (
+        f'The user typed this to steer the use-cases (a hint, not a script):\n"{steer}"\n\n'
+        if steer
+        else ""
+    )
+    # Branch order matches the non-grounded builder: refresh (previous_ideas)
+    # first, then single-idea refine, then cold start.
+    if body.previous_ideas:
+        # Capability-change refresh: the existing stories to minimally rewrite,
+        # WITH their datasources + the capability delta the model must act on
+        # (the system-prompt override says "adjust hook + datasources to reflect
+        # added/removed" — it can only do that if shown both).
+        prev_block = "\n\n".join(
+            f"Story {i + 1}: {p.title}\nHook: {p.hook}\nDatasources: {', '.join(p.datasources)}"
+            for i, p in enumerate(body.previous_ideas)
+        )
+        prev_caps, added_str, removed_str = _capability_delta(
+            mandatory_list, body.previous_capabilities
+        )
+        steer_block = (
+            f"{steer_prefix}"
+            "=== EXISTING STORIES (keep them recognizable; minimal rewrite) ===\n"
+            f"{prev_block}\n\n"
+            "=== CAPABILITY CHANGE ===\n"
+            f"Previous capabilities: {prev_caps}\n"
+            f"Added: {added_str}\n"
+            f"Removed: {removed_str}\n\n"
+        )
+    elif body.refine_idea and body.refine_comment:
+        # Single-idea refine: name the ONE story to rewrite + the user's request.
+        steer_block = (
+            f"{steer_prefix}"
+            "=== EXISTING STORY TO REFINE (rewrite ONLY this one) ===\n"
+            f"Title: {body.refine_idea.title}\n"
+            f"Hook: {body.refine_idea.hook}\n"
+            f"Datasources: {', '.join(body.refine_idea.datasources)}\n\n"
+            "=== USER'S REFINEMENT REQUEST ===\n"
+            f'"{body.refine_comment}"\n\n'
+        )
+    elif steer:
+        steer_block = (
+            f'The user typed this to steer the use-case (a hint, not a script):\n"{steer}"\n\n'
+        )
+    else:
+        steer_block = "The user did NOT type anything — let the tables lead. Propose 3 distinct angles the real data supports.\n\n"
+    return f"""Propose read-only analytics use-cases built directly on the user's real Unity Catalog tables (profiled below).
+
+{steer_block}=== USER CONSTRAINTS (MUST RESPECT) ===
+- User MANDATORY (always include): {mandatory_list}
+- User EXCLUDED (never include): {excluded_list}
+
+=== AVAILABLE CAPABILITIES ===
+{cap_list}
+
+Output line-delimited JSON per the format above (count line, idea lines, capabilities line, reasoning line)."""
+
+
 def _build_suggest_prompts(
     body: SuggestCapabilitiesRequest,
     platform_context: str,
     mandatory_list: str,
     excluded_list: str,
     cap_list: str,
+    ws=None,
 ) -> tuple[str, str]:
-    """Build system and user prompts for capability suggestion."""
+    """Build system and user prompts for capability suggestion.
+
+    `ws` (the app service-principal WorkspaceClient) is only needed when the
+    request grounds on real UC tables (`grounding_tables`) — it lets
+    `_append_shared_context` read the cached scan (or lazily scan) and inject it.
+    """
     # ---- Capabilities-only variant (architecture tab) -----------------------
     # No use-case ideas — the LLM only maps the user's text to the capability
     # catalog. Same selection rules + mandatory/excluded semantics; the output
@@ -248,7 +474,32 @@ Output exactly two lines and nothing else:
 
 Select the capabilities this architecture needs. Output the two JSON lines only."""
 
-        user_prompt = _append_shared_context(body, user_prompt)
+        user_prompt = _append_shared_context(body, user_prompt, ws)
+        return system_prompt, user_prompt
+
+    # ---- Grounded variant ("Use existing schema") --------------------------
+    # The user picked REAL UC tables as a SCHEMA blueprint. The demo STILL
+    # builds READ-ONLY on those real tables — nothing is generated or copied, so
+    # ideas must run as read-only queries on the data as it is (no crafted
+    # catalyst). The capability set is read-only analytics UNLESS the user opted
+    # into data-write (`allow_data_write`), which lets the demo create its own
+    # auxiliary tables and re-enables write-needing capabilities.
+    if body.grounding_tables:
+        # Honor refine / capability-refresh in the grounded flow too — otherwise
+        # the grounded LLM ignores them and regenerates a fresh set, replacing the
+        # OTHER stories the user didn't touch. Precedence matches the non-grounded
+        # builder: refresh (previous_ideas) before single-idea refine.
+        if body.previous_ideas:
+            task_mode, idea_count = "refresh", len(body.previous_ideas)
+        elif body.refine_idea and body.refine_comment:
+            task_mode, idea_count = "refine", 1
+        else:
+            task_mode, idea_count = "cold", None
+        system_prompt = _build_grounded_system_prompt(
+            platform_context, body.allow_data_write, task_mode, idea_count
+        )
+        user_prompt = _build_grounded_user_prompt(body, mandatory_list, excluded_list, cap_list)
+        user_prompt = _append_shared_context(body, user_prompt, ws)
         return system_prompt, user_prompt
 
     system_prompt = f"""You are a Databricks demo architect. Your job is to help users design compelling demos.
@@ -409,11 +660,9 @@ Finally, output one line explaining your reasoning (1-2 sentences max):
             f"Story {i + 1}: {p.title}\nHook: {p.hook}\nDatasources: {', '.join(p.datasources)}"
             for i, p in enumerate(body.previous_ideas)
         )
-        prev_caps = ", ".join(body.previous_capabilities or []) or "(none)"
-        added = sorted(set((m.strip() for m in mandatory_list.split(","))) - set(body.previous_capabilities or []))
-        removed = sorted(set(body.previous_capabilities or []) - set((m.strip() for m in mandatory_list.split(","))))
-        added_str = ", ".join(added) if added else "(none)"
-        removed_str = ", ".join(removed) if removed else "(none)"
+        prev_caps, added_str, removed_str = _capability_delta(
+            mandatory_list, body.previous_capabilities
+        )
         idea_count = len(body.previous_ideas)
 
         user_prompt = f"""User's original demo description:
@@ -484,12 +733,14 @@ Output line-delimited JSON: count line (count=1), then one idea line, then capab
 
 Output line-delimited JSON (idea lines first, then capabilities line)."""
 
-    user_prompt = _append_shared_context(body, user_prompt)
+    user_prompt = _append_shared_context(body, user_prompt, ws)
 
     return system_prompt, user_prompt
 
 
-def _append_shared_context(body: SuggestCapabilitiesRequest, user_prompt: str) -> str:
+def _append_shared_context(
+    body: SuggestCapabilitiesRequest, user_prompt: str, ws=None
+) -> str:
     """Append the uploaded-files + architecture-datasources context blocks.
 
     Shared by every prompt shape (cold start / refine / capability refresh /
@@ -523,7 +774,86 @@ def _append_shared_context(body: SuggestCapabilitiesRequest, user_prompt: str) -
                 "only if the story truly needs them)."
             )
 
+    # "Use existing data": the user picked REAL Unity Catalog tables to ground
+    # the demo on. Inject their scanned schema + light stats + a few sample rows
+    # (from the process-level cache warmed by /grounding/scan; lazily scanned on
+    # a miss) and REQUIRE the story to be built on ONLY these tables.
+    user_prompt = _append_grounding_tables(body, user_prompt, ws)
+
     return user_prompt
+
+
+def _append_grounding_tables(
+    body: SuggestCapabilitiesRequest, user_prompt: str, ws
+) -> str:
+    """If the request grounds on real UC tables, inject their scan + a hard
+    constraint that the story use ONLY those tables."""
+    tables = [t.strip() for t in (body.grounding_tables or []) if t and t.strip()]
+    if not tables or ws is None:
+        return user_prompt
+
+    from ..routes.resources import pick_query_warehouse
+    from ..services import table_stats
+
+    # Prefer the cache (warmed by /grounding/scan). Lazily scan any miss so the
+    # block is never empty even if the scan call was skipped or expired.
+    cached = [table_stats.get_cached(ws, t) for t in tables]
+    if any(s is None for s in cached):
+        warehouse_id, _ = pick_query_warehouse(ws)
+        if warehouse_id:
+            try:
+                table_stats.scan_tables(ws, tables, warehouse_id)
+            except Exception as e:  # noqa: BLE001 — degrade to whatever's cached
+                logger.warning("suggest: lazy table scan failed: %s", e)
+        cached = [table_stats.get_cached(ws, t) for t in tables]
+
+    scans = [s for s in cached if s is not None]
+    if not scans:
+        return user_prompt
+
+    block = table_stats.render_scans_for_prompt(scans)
+    signals = table_stats.render_capability_signals(scans)
+    fq_names = ", ".join(s.full_name for s in scans)
+    user_prompt += (
+        "\n\n=== REAL UNITY CATALOG TABLES — USE THIS SCHEMA AS THE BLUEPRINT ===\n"
+        f"{block}\n\n"
+        "HARD CONSTRAINT: the solution is built DIRECTLY on these real tables, "
+        "READ-ONLY. Every component (dashboards, Genie, metric views) queries "
+        "these exact tables in place — do NOT generate synthetic data, do NOT "
+        "copy the tables, and NEVER write to or modify them. Every use-case idea "
+        "MUST be expressible as read-only queries over these tables + their "
+        "columns; reuse the real table/column names and the entities/categories "
+        "shown; do NOT invent unrelated systems or assume columns that aren't "
+        f"listed. The idea's `datasources` MUST be drawn from this exact set: "
+        f"{fq_names}. Ground the persona, measure/KPI, and any trend in these "
+        "columns + their profiled ranges — the story is whatever the real data "
+        "shows, so do NOT fabricate a spike/anomaly; lean on a real one only if "
+        "the profile reveals it."
+    )
+    if signals:
+        user_prompt += (
+            "\n\n=== DATA CAPABILITY SIGNALS — RATE EACH IDEA'S FIT AGAINST THESE ===\n"
+            f"{signals}"
+        )
+    return user_prompt
+
+
+_VALID_FIT_TIERS = {"Great", "Good", "Possible"}
+
+
+def _normalize_fit(raw: Any) -> dict | None:
+    """Validate the LLM's per-idea `fit` object → {tier, reason} or None.
+
+    Only the grounded ("Use existing data") flow asks for `fit`; a missing or
+    malformed value yields None so the UI shows no badge rather than a broken
+    one. `tier` is normalized to one of Great/Good/Possible."""
+    if not isinstance(raw, dict):
+        return None
+    tier = str(raw.get("tier", "")).strip().capitalize()
+    if tier not in _VALID_FIT_TIERS:
+        return None
+    reason = str(raw.get("reason", "")).strip()
+    return {"tier": tier, "reason": reason}
 
 
 @router.post(
@@ -554,8 +884,11 @@ def suggest_capabilities(
     to_decide = [c.id for c in body.capabilities if c.status is None]
 
     def generate_events():
-        # No prompt → nothing for the LLM to story about, return just caps.
-        if not body.prompt.strip():
+        # No prompt AND no grounding tables → nothing for the LLM to story about,
+        # return just caps. The GROUNDED flow ("Use existing schema") is valid
+        # with an empty prompt — the picked tables' schema drives the story — so
+        # don't bail then.
+        if not body.prompt.strip() and not body.grounding_tables:
             yield f"event: capabilities\ndata: {json.dumps({'capabilities': always_include, 'reasoning': None})}\n\n"
             return
 
@@ -587,7 +920,7 @@ def suggest_capabilities(
         ])
 
         system_prompt, user_prompt = _build_suggest_prompts(
-            body, platform_context, mandatory_list, excluded_list, cap_list
+            body, platform_context, mandatory_list, excluded_list, cap_list, ws
         )
 
         try:
@@ -607,11 +940,16 @@ def suggest_capabilities(
 
             # Stream lines from LLM. Capabilities-only answers are two short
             # JSON lines — cap tokens accordingly.
+            # Grounded runs ("Use existing data") reason over the user's real
+            # multi-table schema + rate each idea's fit — that's where MINI is
+            # weakest, and these runs are low-volume, so use the NORMAL model.
+            grounded = bool(body.grounding_tables)
+            max_tokens = 600 if body.capabilities_only else (3000 if grounded else 2500)
             for line in llm.chat_stream_lines(
                 user_prompt,
                 system_prompt=system_prompt,
-                size=ModelSize.MINI,
-                max_tokens=600 if body.capabilities_only else 2500,
+                size=ModelSize.NORMAL if grounded else ModelSize.MINI,
+                max_tokens=max_tokens,
             ):
                 try:
                     data = json.loads(line)
@@ -638,6 +976,18 @@ def suggest_capabilities(
                             "hook": data.get("hook", ""),
                             "datasources": ds,
                         }
+                        # Richer "why this demo is good" shown when the idea is
+                        # expanded (grounded flow asks for it; optional elsewhere).
+                        why = data.get("why")
+                        if isinstance(why, str) and why.strip():
+                            idea["why"] = why.strip()
+                        # Grounded flow: forward the per-idea FIT signal (tier +
+                        # one-line reason) when the model emitted a valid one. It's
+                        # a consultation hint for the UI, so drop malformed values
+                        # rather than surfacing a broken badge.
+                        fit = _normalize_fit(data.get("fit"))
+                        if fit is not None:
+                            idea["fit"] = fit
                         yield f"event: idea\ndata: {json.dumps(idea)}\n\n"
 
                     elif event_type == "capabilities":

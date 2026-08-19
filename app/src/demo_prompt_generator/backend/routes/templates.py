@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.orm import load_only
 from sqlmodel import func, select
 
 from ..core import Dependencies, create_router
@@ -28,6 +29,7 @@ from ..models import (
     TemplateScreenshot,
     TemplateSearchResult,
     TemplateStatusUpdateRequest,
+    TemplateType,
 )
 from ..services.file_sync import decompress_content
 from ..services.llm_service import LLMService
@@ -105,6 +107,7 @@ def list_templates(
     config: Dependencies.Config,
     status: Optional[str] = None,
     industry: Optional[str] = None,
+    type: Optional[str] = None,
 ):
     """List templates with optional filters.
 
@@ -114,7 +117,19 @@ def list_templates(
     user_email = _get_user_email(headers)
     is_admin = user_email in config.template_admin_emails
 
-    query = select(Template)
+    # Load ONLY the lightweight metadata columns the list item needs — never the
+    # heavy per-row columns (`screenshot` LargeBinary ~0.5–1 MB, the pgvector
+    # `embedding`, `full_description`/`narrative`). A bare `select(Template)`
+    # hydrates the whole row incl. those blobs for every match and throws them
+    # away, which made the list slow (esp. over a remote Lakebase branch).
+    # `load_only(...)` keeps `t` a real Template (so attribute access still
+    # type-checks) while omitting the blobs from the SELECT. `has_screenshot`/
+    # counts come from the two cheap queries below (no blobs loaded).
+    # (SQLModel types model attrs as their value type, so mypy can't see them as
+    #  ORM columns for load_only — the one-line call carries a single arg-type
+    #  ignore; correct at runtime.)
+    _list_cols = (Template.id, Template.name, Template.status, Template.owner_email, Template.industry, Template.description, Template.customer, Template.capabilities, Template.official, Template.template_type, Template.submitted_at, Template.reviewed_at)
+    query = select(Template).options(load_only(*_list_cols))  # type: ignore[arg-type]
 
     # Always include user's own templates (for "My Templates" section)
     # Plus filter by status based on admin/non-admin permissions
@@ -137,6 +152,17 @@ def list_templates(
 
     if industry:
         query = query.where(Template.industry == industry)
+
+    # Template-kind filter (SOLUTION / WORKSHOP / GENIE_WORKSHOP / ARCHITECTURE).
+    # When an explicit `type` is given, filter to it (case-insensitive — stored
+    # values are uppercase, so ?type=workshop and ?type=WORKSHOP both work). When
+    # NOT given, exclude WORKSHOP by default — workshop training templates are
+    # surfaced only via an explicit `?type=WORKSHOP` link, never in the general
+    # gallery/home search.
+    if type:
+        query = query.where(Template.template_type == type.upper())
+    else:
+        query = query.where(Template.template_type != TemplateType.WORKSHOP.value)
 
     query = query.order_by(Template.submitted_at.desc())
 
@@ -167,6 +193,7 @@ def list_templates(
             customer=t.customer,
             capabilities=_parse_capabilities(t.capabilities),
             official=t.official,
+            template_type=t.template_type,
             has_screenshot=t.id in ids_with_shot,
             screenshot_count=(1 if t.id in ids_with_shot else 0) + extra_counts.get(t.id, 0),
             submitted_at=t.submitted_at,
@@ -229,6 +256,7 @@ def get_template(
         full_description=template.full_description,
         capabilities=_parse_capabilities(template.capabilities),
         official=template.official,
+        template_type=template.template_type,
         has_screenshot=template.screenshot is not None,
         screenshot_count=screenshot_count,
         submitted_at=template.submitted_at,
@@ -447,10 +475,30 @@ def export_template(
     if not files:
         raise HTTPException(status_code=404, detail="Template has no files")
 
+    # Build an IMPORT-SAFE zip. The Databricks workspace UI import (multipart
+    # `format=AUTO`) unzips server-side and creates each entry in archive order,
+    # creating a file's parent folder only if that folder was already made — so an
+    # archive that lists `a/b.txt` before its `a/` dir 404s with
+    # "The parent folder (…/a) does not exist." DB row order is arbitrary, so we
+    # (1) emit an explicit directory entry for every ancestor folder, and
+    # (2) write everything sorted so a parent ALWAYS precedes its children.
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in files:
+        seen_dirs: set[str] = set()
+
+        def _ensure_dirs(rel_path: str) -> None:
+            # Emit "a/", "a/b/", … (parent-first) for a file at "a/b/c.txt".
+            parts = rel_path.replace("\\", "/").split("/")[:-1]
+            prefix = ""
+            for seg in parts:
+                prefix = f"{prefix}{seg}/"
+                if prefix not in seen_dirs:
+                    seen_dirs.add(prefix)
+                    zf.writestr(prefix, b"")
+
+        for f in sorted(files, key=lambda x: x.relative_path):
             try:
+                _ensure_dirs(f.relative_path)
                 zf.writestr(f.relative_path, decompress_content(f.content_compressed))
             except Exception:
                 # Skip an unreadable file rather than fail the whole download.
@@ -508,6 +556,7 @@ def update_template_official(
         customer=template.customer,
         capabilities=_parse_capabilities(template.capabilities),
         official=template.official,
+        template_type=template.template_type,
         has_screenshot=template.screenshot is not None,
         submitted_at=template.submitted_at,
         reviewed_at=template.reviewed_at,
@@ -604,6 +653,7 @@ def submit_template_from_project(
         full_description=template.full_description,
         capabilities=_parse_capabilities(template.capabilities),
         official=template.official,
+        template_type=template.template_type,
         has_screenshot=template.screenshot is not None,
         submitted_at=template.submitted_at,
         reviewed_at=template.reviewed_at,
@@ -794,6 +844,7 @@ def get_template_by_project(
         full_description=template.full_description,
         capabilities=_parse_capabilities(template.capabilities),
         official=template.official,
+        template_type=template.template_type,
         has_screenshot=template.screenshot is not None,
         submitted_at=template.submitted_at,
         reviewed_at=template.reviewed_at,

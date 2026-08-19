@@ -9,8 +9,16 @@ templates keyed by folder name, upgraded smoothly on restart:
     seeder can skip unchanged templates and diff-update only changed ones.
 
 Revision ID: v13_template_official_screenshot
-Revises: v11_project_mode
+Revises: v15_ownership_hash
 Create Date: 2026-07-21
+
+NOTE: down_revision was rebased from v11_project_mode to v15_ownership_hash
+when the cross-workspace-deploy branch (which added v13_target_ws_host →
+v14_user_settings → v15_ownership_hash off v11_project_mode) merged with main
+(which added these template migrations off the same v11_project_mode). Both
+forks branched from v11_project_mode; linearizing the two heads. The
+cross-workspace migrations run FIRST because the live remote-deploy instance's
+DB has already applied them (v14_user_settings) but not these template migrations.
 """
 from typing import Sequence, Union
 
@@ -18,7 +26,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision: str = "v13_template_official_screenshot"
-down_revision: Union[str, None] = "v11_project_mode"
+down_revision: Union[str, None] = "v15_ownership_hash"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

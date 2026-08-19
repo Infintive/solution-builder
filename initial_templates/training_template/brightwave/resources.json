@@ -1,0 +1,25 @@
+{
+  "short_description": "Brightwave — a consumer brand's campaign-replication-and-budget rescue. Attribution landing too late left a fifth of paid spend in underperforming campaigns while a cluster of winners quietly outperformed on a specific channel-and-creative combination. A marketing app reads governed campaign + spend data at low latency, a recommendation ranks the move (replicate a winner / reallocate budget / pause) per underperformer, and a CMO approves mid-quarter — turning governed lakehouse data into a marketing action, on-brand, with the assistant's content-generation AI spend capped and observable.",
+  "capabilities": {
+    "buildable": [
+      "synthetic-data-gen",
+      "sdp",
+      "metric-views",
+      "aibi-dashboards",
+      "genie",
+      "databricks-apps",
+      "lakebase"
+    ],
+    "optional": [
+      "ml-training-serving"
+    ],
+    "talking_track": [
+      "lakeflow-connect",
+      "unity-catalog",
+      "ai-gateway",
+      "genie-one",
+      "genie-code"
+    ]
+  },
+  "created_resources": {}
+}

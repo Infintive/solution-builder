@@ -58,6 +58,7 @@ export const EditPanel = memo(function EditPanel({
   onSetParam,
   nodeTitle,
   onSetTitle,
+  titlePlaceholder,
   onClose,
   onRotate,
   onRemove,
@@ -103,12 +104,14 @@ export const EditPanel = memo(function EditPanel({
    *  a component that declares `options`. `params` is the node's current values;
    *  `onSetParam` writes one key. */
   options?: ComponentOption[];
-  params?: Record<string, boolean>;
-  onSetParam?: (key: string, value: boolean) => void;
-  /** Editable block title (composites like the medallion table). `nodeTitle` is
-   *  the current text (or its default placeholder); `onSetTitle` renames it. */
+  params?: Record<string, boolean | string>;
+  onSetParam?: (key: string, value: boolean | string) => void;
+  /** Editable block title (composites like the medallion table + Lakeflow blocks).
+   *  `nodeTitle` is the current text (blank when still the default); `onSetTitle`
+   *  renames it; `titlePlaceholder` hints the block's default when blank. */
   nodeTitle?: string;
   onSetTitle?: (title: string) => void;
+  titlePlaceholder?: string;
   onClose: () => void;
   onRotate: () => void;
   onRemove: () => void;
@@ -198,7 +201,10 @@ export const EditPanel = memo(function EditPanel({
         ) : annotation ? (
           <>
             <AnnotationMenu a={annotation} Item={Item} onAnno={onAnno} onPickLogo={onPickLogo} onRotate={onRotate} onRemove={onRemove} />
-            {DescToggle}
+            {/* A logo owns its own Title + Description inputs (in AnnotationMenu),
+                where an empty description hides the line — so no "Show description"
+                toggle for logos. Other annotation kinds keep the toggle. */}
+            {annotation.variant !== "logo" && DescToggle}
             <Divider />
             <StyleControls style={style} onStyle={onStyle} showIconColor={annotation.variant === "logo"} noBoxDefaults={annotation.variant === "logo"} />
             <Item icon={<Copy className="h-3.5 w-3.5" />} label="Copy style" onClick={onCopyStyle} />
@@ -219,34 +225,49 @@ export const EditPanel = memo(function EditPanel({
                 <input
                   type="text"
                   value={nodeTitle ?? ""}
-                  placeholder="Title…"
+                  placeholder={titlePlaceholder ?? "Title…"}
                   onClick={(e) => e.stopPropagation()}
                   onChange={(e) => onSetTitle(e.target.value)}
                   className="w-full rounded border border-border bg-background px-2 py-1 text-[11px] outline-none focus:border-primary"
                 />
               </div>
             )}
-            {/* Component options — checkboxes for any component declaring `options`
-                (e.g. the medallion table's Feature store / Metric views forks). */}
+            {/* Component options — declarative, from any component's `options`.
+                A boolean option renders a checkbox (e.g. the medallion's Feature
+                store / Metric views forks); a text option renders a labeled input
+                (e.g. the bronze/silver/gold layer captions). Both round-trip via
+                params, so adding an option to a catalog entry surfaces it here
+                automatically — no per-component wiring. */}
             {options && options.length > 0 && onSetParam && (
               <>
                 <Divider />
                 <div className="px-2 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Options</div>
-                {options.map((o) => {
-                  const on = params?.[o.key] ?? o.default ?? false;
-                  return (
+                {options.map((o) =>
+                  o.type === "text" ? (
+                    <label key={o.key} className="flex flex-col gap-0.5 px-2 py-1 text-[11px] text-muted-foreground">
+                      {o.label}
+                      <input
+                        type="text"
+                        value={typeof params?.[o.key] === "string" ? (params[o.key] as string) : ""}
+                        placeholder={o.placeholder}
+                        onChange={(e) => { e.stopPropagation(); onSetParam!(o.key, e.target.value); }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full rounded border border-border bg-background px-2 py-1 text-[11.5px] text-foreground outline-none focus:border-primary"
+                      />
+                    </label>
+                  ) : (
                     <label key={o.key} className="flex cursor-pointer items-center gap-2 px-2 py-1 text-[12.5px] hover:bg-muted">
                       <input
                         type="checkbox"
-                        checked={on}
-                        onChange={(e) => { e.stopPropagation(); onSetParam(o.key, e.target.checked); }}
+                        checked={!!(params?.[o.key] ?? o.default ?? false)}
+                        onChange={(e) => { e.stopPropagation(); onSetParam!(o.key, e.target.checked); }}
                         onClick={(e) => e.stopPropagation()}
                         className="h-3.5 w-3.5 accent-primary"
                       />
                       {o.label}
                     </label>
-                  );
-                })}
+                  ),
+                )}
               </>
             )}
             {/* Source tiles: where the label sits relative to the icon. */}

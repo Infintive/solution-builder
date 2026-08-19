@@ -1,0 +1,11 @@
+## my-new-demo-ws
+- **ID:** `01f18abc000011112222333344445555`
+- **Template:** AWS Stable Serverless
+- **State:** Active
+- **Cloud:** aws
+- **Region:** us-east-2
+- **Environment:** stable
+- **Owner:** joe.miao@databricks.com
+- **Created:** 2026-07-29T18:00:00
+- **Expires:** 2026-08-28 (30 days remaining)
+- **Workspace URL:** https://fevm-my-new-demo-ws.cloud.databricks.com

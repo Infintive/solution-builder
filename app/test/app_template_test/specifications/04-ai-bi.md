@@ -62,7 +62,7 @@ Add genie_space_id to `resources.json`.
 **Skill to use**: `databricks-aibi-dashboards` — read `SKILLS/databricks-aibi-dashboards/SKILL.md` before implementing. The skill owns the JSON shape, encoding rules, and grid math; this spec is story-level.
 
 Create `LuxeBeauty Operations` dashboard. Save locally as `PROJECT/dashboard.json`. Link the Genie space from section A.
-Reminder: You must set `--dataset-catalog` and  `--dataset-schema` when running databricks lakeview create
+Reminder: You must set `--dataset-catalog` and `--dataset-schema` when running `databricks lakeview create` and `databricks lakeview update` (update strips them otherwise)
 
 ### Filters (left panel — `PAGE_TYPE_GLOBAL_FILTERS`)
 

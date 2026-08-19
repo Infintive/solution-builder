@@ -11,13 +11,13 @@ import { type NodeProps } from "@xyflow/react";
 import { DATABRICKS_ICONS } from "../../databricks-icons";
 import { FileSvgIcon } from "../../file-icons";
 import { RotatableCard, baseSize, DropTargetContext, EditModeContext, cardStyle, type NodeData } from "./shared";
-import { LakeflowBody, LakeflowPorts } from "./composite-lakeflow";
+import { LakeflowBody, LakeflowPorts, LakeflowHeader } from "./composite-lakeflow";
 
 export const LakeflowGenieBlock = memo(function LakeflowGenieBlock({ data, selected }: NodeProps) {
   const d = data as NodeData;
   const isDropTarget = useContext(DropTargetContext) === d.nodeId;
   const editMode = useContext(EditModeContext);
-  const nat = baseSize(d.component);
+  const nat = baseSize(d.component, d.params);
   const GenieCode = DATABRICKS_ICONS.genieCodeBrand;
   const card = cardStyle(d, { borderColor: `${d.bandColor}66`, radius: 16 });
   return (
@@ -38,6 +38,8 @@ export const LakeflowGenieBlock = memo(function LakeflowGenieBlock({ data, selec
       onContext={(e) => { e.preventDefault(); d.onContext(d.nodeId, e.clientX, e.clientY); }}
     >
       <LakeflowPorts editMode={editMode} selected={!!selected} isDropTarget={isDropTarget} />
+      {/* Title legend on the top border (sibling of the overflow-hidden content). */}
+      <LakeflowHeader d={d} mask={card.hasFill ? (d.fillColor as string) : "var(--card)"} />
 
       <div
         onClick={() => d.onSelect(d.nodeId)}

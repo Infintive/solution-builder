@@ -1,0 +1,87 @@
+{
+  // App config (JSONC). Loaded by server/server.ts loadAppConfig.
+  //
+  // ${VAR} / ${VAR:default} placeholders are substituted against process.env
+  // BEFORE JSON parsing. So catalog/schema/resource-IDs live in env (one
+  // source of truth), NOT as literals here — set them in `.env` (local dev +
+  // preview) or via the DAB (deployed; finalize_app.sh writes app.yaml's env).
+  //   - `${VAR}`           → empty string if unset
+  //   - `${VAR:default}`   → `default` if unset
+  // Empty values degrade gracefully (inert deep-link tile / skipped feature);
+  // the app still boots. See server.ts loadAppConfig for the substitution +
+  // the boot warnings.
+  //
+  // CUSTOMIZE per demo: branding, assistantScript, and data.tables names
+  // below. Everything else is env-driven and shouldn't need editing.
+
+  // ─ Agent backend: set ONE (via env). masEndpointName → ask_data tool.
+  //   genieSpaceId → swap to callGenieSpace in server/agent/caredesk.ts makeTools.
+  //   Both empty → no data tool → agent can't answer "why" questions.
+  //   Streamline ships with Genie (the default). For MAS: set MAS_ENDPOINT_NAME,
+  //   leave GENIE_SPACE_ID empty, and swap callGenieSpace → callMasEndpoint in
+  //   makeTools. For both: register both with distinct names + tell the model
+  //   in instructions when to prefer each.
+  "masEndpointName": "${MAS_ENDPOINT_NAME:}",
+  "genieSpaceId":    "${GENIE_SPACE_ID:}",
+
+  // Agent LLM. Needs the Responses API (openai/v1/responses). databricks-gpt-5-4
+  // is the baseline; a newer GPT endpoint with /responses enabled works too.
+  // Non-Responses models (Claude etc.) 400 BAD_REQUEST.
+  "agentModel": "databricks-gpt-5-4",
+
+  // MLflow trace path. Empty → chat shows "Trace pending…". Auto-created
+  // at boot via lib/mlflow.ts.
+  "mlflowExperimentId": "",
+  "agentMlflowExperimentPath": "${AGENT_MLFLOW_EXPERIMENT_PATH:}",
+
+  // Embedded AI/BI dashboard (UUID). Empty → drop the /dashboard route +
+  // sidebar entry. Also a tile on /platform.
+  "dashboardId": "${DASHBOARD_ID:}",
+
+  // Workspace resource IDs → deep-link URLs via /api/resources (PlatformDiagram
+  // on /platform). Empty id → tile renders inert.
+  "pipelineId":        "${PIPELINE_ID:}",
+  "warehouseId":       "${WAREHOUSE_ID:}",
+  "kaEndpointName":    "${KA_ENDPOINT_NAME:}",
+  "lakebaseProjectId": "${LAKEBASE_PROJECT_ID:}",
+  "appUrl":            "${APP_URL:}",
+  "mlModelName":       "${DEMO_CATALOG:ai_demo_gen}.${DEMO_SCHEMA:streamline_telco}.churn_recommender",
+
+  // Delta source for boot-time Lakebase mirror (server/db/sync.ts). catalog +
+  // schema come from env; the table NAMES are domain-specific — rename to your
+  // demo's gold/silver tables (keep client/src/shared/types.ts + Drizzle
+  // schema in server/db/schema.ts in sync). retentionRecommendations empty → skip the
+  // ML-predictions sync (it's built by the trainee in Build 2 ML step).
+  "data": {
+    "catalog": "${DEMO_CATALOG:ai_demo_gen}",
+    "schema":  "${DEMO_SCHEMA:streamline_telco}",
+    "tables": {
+      "subscriberPosition":        "gold_subscriber_position",
+      "openAtrisk":                "gold_open_atrisk",
+      "retentionRecommendations":  "gold_retention_recommendations",
+      "offers":                    "raw_offers"
+    }
+  },
+
+  // Surfaces in dock header + page titles. CUSTOMIZE per demo.
+  "branding": {
+    "appName": "Streamline Care Desk"
+  },
+
+  // Dock's "Suggested next" chip walks this list. Step N unlocks once the
+  // previous assistant message contains any triggerAfter[] substring.
+  // Picker: client/src/chat/script.ts. CUSTOMIZE per demo.
+  "assistantScript": [
+    {
+      "prompt": "Why is SUB-0000214 at risk of churning, and what should I offer?"
+    },
+    {
+      "prompt": "Rank the offer. Use the model.",
+      "triggerAfter": ["risk", "churn", "offer", "SUB-0000214", "outage"]
+    },
+    {
+      "prompt": "Yes — apply the bill credit.",
+      "triggerAfter": ["credit", "offer", "apply", "retain"]
+    }
+  ]
+}

@@ -12,7 +12,8 @@ Creates realistic demo datasets using Spark + Faker (or dbldatagen). Produces ra
 
 ## When to Use
 
-- Every demo starts here — foundation every other component depends on.
+- Most demos start here — the data foundation every other component depends on.
+- **Skip entirely for "use existing data" (grounded) demos** — those build READ-ONLY on the user's real UC tables (see SKILL.md flow A → Build fork `03.1r`); no synthetic data is generated. (Only exception: a grounded demo where the user opted into data-write may synthesize **auxiliary** tables into the demo's OWN catalog — the real tables still stay read-only.)
 - Generated data must encode "the event" — the anomaly the hero persona investigates.
 - Runs once to produce static files (Parquet/CSV) the pipeline ingests.
 

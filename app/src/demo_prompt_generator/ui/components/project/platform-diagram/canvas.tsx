@@ -34,6 +34,7 @@ import {
   BAND_META,
   catalogBands,
   DBX_ARCH_PRESET_BY_ID,
+  logoFootprint,
   type PlatformComponent,
   type PlatformSchema,
   type BandId,
@@ -63,7 +64,6 @@ import { LF_PORTS } from "./composite-lakeflow";
 import {
   IconPicker,
   ANNOTATION_DEFAULT_SIZE,
-  logoFitSize,
   type AnnotationNodeData,
 } from "./annotations";
 import { logoLabel } from "../../file-icons";
@@ -74,13 +74,16 @@ import {
   Undo2,
   Redo2,
   Copy,
+  Clock,
 } from "lucide-react";
 import { nodeTypes, edgeTypes } from "./node-types";
 import { DetailPanel } from "./panels/detail-panel";
 import { EditPanel } from "./panels/edit-panel";
 import { LibraryPalette } from "./panels/library-palette";
-import { componentLookup, schemaToFlow, flowToLayout, EDGE_Z, handlesFor, fallbackHandle } from "./flow-mapping";
+import { componentLookup, schemaToFlow, flowToLayout, EDGE_Z, NODE_Z, handlesFor, fallbackHandle } from "./flow-mapping";
+import { parseArchitecture, serializeArchitecture } from "@/lib/platform-architecture";
 import { ContextMenu, type CtxMenu } from "./menus/context-menu";
+import { GroupResize, rectOfNode, type GroupScale } from "./group-resize";
 import { useDiagramHistory } from "./hooks/use-diagram-history";
 import { useNodeMutations } from "./hooks/use-node-mutations";
 import { useEdgeMutations } from "./hooks/use-edge-mutations";
@@ -96,9 +99,19 @@ interface CanvasProps {
   /** Live collaboration binding (cursors + presence). Absent when the project
    *  isn't shared / collab is off. */
   collab?: CanvasCollab;
+  /** Interaction gate (in-app collab only). Canvas sets `.current = true` while
+   *  the local user is mid drag/resize so the parent defers remote-op reseeds
+   *  (which would otherwise flash/jank the live interaction). Absent standalone. */
+  interactingRef?: React.MutableRefObject<boolean>;
+  /** Called the moment a local drag/resize settles, so the parent can flush any
+   *  peer op it deferred during the interaction. Paired with `interactingRef`. */
+  onInteractionEnd?: () => void;
   /** Opens the Share dialog ("Share live with others"). When set, a share
    *  button shows in the floating toolbar. Absent in standalone / read-only. */
   onShareLive?: () => void;
+  /** Toggles the architecture-history panel. When set, a History button shows
+   *  in the floating toolbar next to Share live. In-app only. */
+  onToggleHistory?: () => void;
   /** Initial edit-mode. Defaults to true (the in-app editor); the standalone
    *  viewer passes false to render read-only. */
   defaultEditMode?: boolean;
@@ -118,6 +131,20 @@ interface CanvasProps {
   tabBar?: React.ReactNode;
 }
 
+/** Mint a unique instance id for a newly-ADDED node. The first instance keeps the
+ *  bare `base` id (clean for the common single-instance case); a second+ instance
+ *  gets `base#<rand>` with a short RANDOM token — not a sequential `#2/#3`. The
+ *  randomness matters under live collaboration: two people adding another instance
+ *  of the same component concurrently would both compute `#2` deterministically
+ *  and collide on the shared doc (one add lost to key-LWW); a random token makes
+ *  concurrent adds distinct. `baseId()` still recovers `base` (splits at `#`). */
+function mintInstanceId(base: string, taken: (id: string) => boolean): string {
+  if (!taken(base)) return base;
+  let id = `${base}#${Math.random().toString(36).slice(2, 6)}`;
+  while (taken(id)) id = `${base}#${Math.random().toString(36).slice(2, 6)}`;
+  return id;
+}
+
 /** Stable empty-selection sentinel so `groupTargets` keeps one identity when
  *  nothing multi-selected (a fresh `[]` each render would churn the memo'd
  *  EditPanel every drag frame). */
@@ -126,6 +153,76 @@ const EMPTY_IDS: string[] = [];
 /** Stable no-op context-menu suppressor for the ReactFlow node/selection
  *  handlers (a fresh `(e) => e.preventDefault()` each render is needless). */
 const preventDefault = (e: { preventDefault: () => void }) => e.preventDefault();
+
+/** True iff two graphs have the SAME set of ids (order-independent). Used to tell
+ *  a pure re-layout reseed (keep undo history) from a structural load (reset it). */
+function sameIdSet(a: { id: string }[], b: { id: string }[]): boolean {
+  if (a.length !== b.length) return false;
+  const ids = new Set(a.map((x) => x.id));
+  return b.every((x) => ids.has(x.id));
+}
+
+/** After a node is dropped in a relative column, the un-pinned siblings re-stack.
+ *  Compute that reflow LOCALLY (so it's instant, not after the save round-trip):
+ *  serialize the live graph → parse (which runs computeLayout) → return the nodes
+ *  with ONLY the siblings' positions patched IN PLACE. Node identities, selection,
+ *  data, and the dropped/pinned nodes are untouched. Best-effort — on any error
+ *  returns the input unchanged (the round-trip reflow still corrects it).
+ *
+ *  A sibling is patched iff it: is NOT one of the just-`dropped` ids, is NOT
+ *  pinned (pinned nodes keep their pixel position), and appears in the recomputed
+ *  layout at a DIFFERENT position. */
+function reflowRelativeSiblings(
+  nds: Node[],
+  eds: Edge[],
+  schema: PlatformSchema,
+  dropped: Set<string>,
+): Node[] {
+  try {
+    const body = serializeArchitecture(schema, flowToLayout(nds, eds, schema));
+    const recomputed = parseArchitecture(body).layout.nodes;
+    let changed = false;
+    const next = nds.map((n) => {
+      if (dropped.has(n.id) || (n.data as NodeData).pinned) return n;
+      const p = recomputed[n.id];
+      if (!p) return n;
+      const posMoved = Math.round(p.x) !== Math.round(n.position.x) || Math.round(p.y) !== Math.round(n.position.y);
+      // A wrapping box / composite is AUTO-SIZED by computeLayout from its
+      // children, so a sibling move can change its w/h too. Patch that here as
+      // well — else the box keeps its stale (halfway) size until the round-trip
+      // corrects it ~400ms later (the "double resize" flicker). p.w/p.h are the
+      // footprint dims, matching RF width/height directly.
+      const curW = (n.width ?? (n.data as NodeData).w);
+      const curH = (n.height ?? (n.data as NodeData).h);
+      const sizeChanged =
+        p.w != null && p.h != null &&
+        (Math.round(p.w) !== Math.round(curW ?? -1) || Math.round(p.h) !== Math.round(curH ?? -1));
+      if (!posMoved && !sizeChanged) return n;
+      changed = true;
+      const dd = n.data as NodeData;
+      // Only write data.w/data.h when the node was ALREADY user-sized (dd.w set) —
+      // else flowToLayout would emit explicit w/h and PIN an auto-sized box's
+      // size, breaking its wrap auto-sizing. For an auto-sized box we patch just
+      // the RF visual dims (width/height/style); its data stays size-free.
+      const wasUserSized = dd.w != null;
+      return {
+        ...n,
+        ...(posMoved ? { position: { x: p.x, y: p.y } } : {}),
+        ...(sizeChanged
+          ? {
+              width: p.w,
+              height: p.h,
+              style: { ...n.style, width: p.w, height: p.h },
+              ...(wasUserSized ? { data: { ...dd, w: Math.round(p.w!), h: Math.round(p.h!) } } : {}),
+            }
+          : {}),
+      };
+    });
+    return changed ? next : nds;
+  } catch {
+    return nds; // fall back to the round-trip reflow
+  }
+}
 
 // --- Static <ReactFlow> props — hoisted to module scope so they keep ONE
 //     identity for the component's lifetime. Passing fresh object/array
@@ -137,13 +234,22 @@ const PRO_OPTIONS = { hideAttribution: true };
 const DEFAULT_EDGE_OPTIONS = { type: "flow" };
 const PAN_ON_DRAG: [number, number] = [1, 2];
 const MULTI_SELECT_KEYS = ["Shift"];
+// Initial-fit options. `maxZoom: 1` caps how far the auto-fit zooms IN: without
+// it, a near-empty canvas (0–1 nodes, or a couple of small annotations) frames
+// its tiny bbox and RF zooms to the global maxZoom (2×), so one note/component
+// fills the screen and everything you then add is enormous. Capping the FIT at
+// 1× keeps a sparse diagram at a natural size while still filling the viewport
+// for a dense one. This bounds only the AUTO-fit — the user can still zoom to
+// the full 0.3–2 range by hand (mouse wheel / Controls). `padding` leaves a
+// comfortable margin so a single centered node isn't edge-to-edge.
+const FIT_VIEW_OPTIONS = { maxZoom: 1, padding: 0.2 };
 
 // memo: the parent (PlatformDiagram) re-renders on every save-status change
 // (saving → saved → idle, ~3× per save). All of Canvas's props are stable
 // (memoized schema/deepLinks, useCallback'd handlers), so the memo drops those
 // parent-driven full re-renders entirely — they'd otherwise re-run the whole
 // render body for a status chip the Canvas doesn't even show.
-export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSetTrademark, collab, onShareLive, defaultEditMode = true, readOnly = false, toolbarExtras, toolbarStatus, tabBar }: CanvasProps) {
+export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSetTrademark, collab, interactingRef: interactingRefProp, onInteractionEnd, onShareLive, onToggleHistory, defaultEditMode = true, readOnly = false, toolbarExtras, toolbarStatus, tabBar }: CanvasProps) {
   const [confirmTrademark, setConfirmTrademark] = useState(false);
   const [sourcePicker, setSourcePicker] = useState(false);
   // "see more logos" from search → the full logo picker, seeded with the query
@@ -194,6 +300,25 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
   //     lives in the hook's sendCursor. --------------------------------------
   const collabRef = useRef(collab);
   collabRef.current = collab;
+  // --- Interaction gate (collab): tell the parent to hold off applying peer ops
+  //     while a local drag/resize is in flight, then flush them on settle. Stable
+  //     refs so the memoized change handlers don't re-create when the parent
+  //     re-renders. `endInteraction` clears the gate (idempotent) + flushes. -----
+  const interactingRef = useRef(interactingRefProp);
+  interactingRef.current = interactingRefProp;
+  const onInteractionEndRef = useRef(onInteractionEnd);
+  onInteractionEndRef.current = onInteractionEnd;
+  const beginInteraction = useCallback(() => {
+    const g = interactingRef.current;
+    if (g) g.current = true;
+  }, []);
+  const endInteraction = useCallback(() => {
+    const g = interactingRef.current;
+    if (g && g.current) {
+      g.current = false;
+      onInteractionEndRef.current?.(); // replay any op deferred during the drag
+    }
+  }, []);
   const onPointerMoveCursor = useCallback((e: React.PointerEvent) => {
     const c = collabRef.current;
     if (!c) return;
@@ -208,26 +333,41 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
   //     Heuristic (the widely-used one): a trackpad pan has a horizontal
   //     component (deltaX ≠ 0) OR small fractional/non-line deltas; a mouse
   //     wheel is a vertical-only, larger, line/page-mode tick. `ctrlKey` (set by
-  //     the OS for a trackpad PINCH) always means zoom → let it through. --------
-  const onWheelCapture = useCallback((e: React.WheelEvent) => {
-    if (e.ctrlKey) return; // pinch-zoom (OS sets ctrlKey) → ReactFlow zooms
-    const { deltaX, deltaY, deltaMode } = e;
-    // Distinguish trackpad two-finger scroll from a mouse wheel:
-    //  • Any horizontal component (deltaX ≠ 0) → only a trackpad does this → PAN.
-    //  • A pixel-mode (deltaMode 0) vertical scroll with a SMALL delta → trackpad
-    //    inertia → PAN. A mouse wheel arrives as a big notch (|deltaY| ≥ ~40, or
-    //    line/page mode deltaMode ≠ 0) → let it fall through to ReactFlow's
-    //    zoom-to-cursor. The 40px threshold cleanly separates trackpad ticks
-    //    (~1–30px) from wheel notches (~100px, or 120 on Windows).
-    const isTrackpadPan =
-      Math.abs(deltaX) > 0 || (deltaMode === 0 && Math.abs(deltaY) < 40);
-    if (!isTrackpadPan) return; // mouse wheel → ReactFlow zooms to the cursor
-    // Pan: shift the viewport by the scroll delta (natural scroll direction).
-    e.preventDefault();
-    e.stopPropagation();
-    const vp = getViewport();
-    setViewport({ x: vp.x - deltaX, y: vp.y - deltaY, zoom: vp.zoom });
-  }, [getViewport, setViewport]);
+  //     the OS for a trackpad PINCH) always means zoom → let it through.
+  //
+  //     Attached as a NATIVE listener with { passive: false } — React's synthetic
+  //     onWheel is passive, so calling preventDefault() there is a no-op and
+  //     floods the console ("Unable to preventDefault inside passive event
+  //     listener"). A native non-passive listener actually prevents the default
+  //     scroll AND is silent. Refs keep the handler stable (no re-add per frame).
+  const wheelDeps = useRef({ getViewport, setViewport });
+  wheelDeps.current = { getViewport, setViewport };
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) return; // pinch-zoom (OS sets ctrlKey) → ReactFlow zooms
+      // Don't hijack a wheel over an OVERLAY surface (logo/icon picker modal); it
+      // tags itself [data-arch-overlay] and owns its own scroll.
+      if ((e.target as Element | null)?.closest?.("[data-arch-overlay]")) return;
+      const { deltaX, deltaY, deltaMode } = e;
+      // trackpad two-finger scroll vs mouse wheel: horizontal component, or a
+      // small pixel-mode vertical delta → trackpad PAN; a big/line-mode notch →
+      // fall through to ReactFlow's zoom-to-cursor.
+      const isTrackpadPan =
+        Math.abs(deltaX) > 0 || (deltaMode === 0 && Math.abs(deltaY) < 40);
+      if (!isTrackpadPan) return; // mouse wheel → ReactFlow zooms
+      e.preventDefault();
+      e.stopPropagation();
+      const { getViewport: gv, setViewport: sv } = wheelDeps.current;
+      const vp = gv();
+      sv({ x: vp.x - deltaX, y: vp.y - deltaY, zoom: vp.zoom });
+    };
+    // capture + non-passive: runs before ReactFlow's own wheel handling and can
+    // actually preventDefault the page/RF scroll.
+    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => el.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
+  }, []);
 
   // --- READ-ONLY previews only: re-fit when the container gains real size. The
   //     built-in `fitView` prop runs at mount, but a preview mounted inside a
@@ -249,7 +389,8 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
       if (key === lastFitSize.current) return; // size unchanged → skip
       lastFitSize.current = key;
       // rAF so the fit runs after the browser has committed the new layout.
-      requestAnimationFrame(() => fitView({ duration: 0 }));
+      // Same maxZoom cap as the initial fit so a sparse preview doesn't over-zoom.
+      requestAnimationFrame(() => fitView({ duration: 0, ...FIT_VIEW_OPTIONS }));
     };
     refit();
     const ro = new ResizeObserver(refit);
@@ -338,7 +479,7 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
   // re-seed effect) — eliminating the old beginBurstRef/endBurstRef/
   // resetHistoryRef use-before-define hacks. scheduleSave is registered back
   // into the hook (setScheduleSave) once it's defined, since restore needs it.
-  const { beginBurst, endBurst, resetHistory, undo, redo, canUndo, canRedo, setScheduleSave } =
+  const { beginBurst, endBurst, resetHistory, rebaseHistory, undo, redo, canUndo, canRedo, setScheduleSave } =
     useDiagramHistory({ nodes, edges, setNodes, setEdges });
 
   // Re-seed the graph when the underlying schema changes. useNodesState/
@@ -349,17 +490,51 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
   const seededFrom = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null);
   useEffect(() => {
     if (seededFrom.current === initial) return;
+    const prev = seededFrom.current;
     seededFrom.current = initial;
-    setNodes(initial.nodes);
+    // Carry the CURRENT selection (by id) onto the reseeded nodes — a reseed
+    // rebuilds the node array, which would otherwise drop `selected` and deselect
+    // whatever the user just added/clicked (the "new box flashes deselected" bug).
+    const selectedNow = new Set(nodesRef.current.filter((n) => n.selected).map((n) => n.id));
+    setNodes(selectedNow.size
+      ? initial.nodes.map((n) => (selectedNow.has(n.id) ? { ...n, selected: true } : n))
+      : initial.nodes);
     setEdges(initial.edges);
-    // Reset undo history to the freshly-loaded state as the new baseline.
-    resetHistory();
-  }, [initial, setNodes, setEdges, resetHistory]);
+    // History handling on a reseed:
+    //   • SAME logical document (same node+edge id-set) — e.g. a save round-trip
+    //     that only re-laid-out relative siblings, or a re-parse of our own echo:
+    //     REBASE the baseline but KEEP the undo/redo stack, so the user doesn't
+    //     lose their history just because a save reflowed the diagram.
+    //   • DIFFERENT id-set (fresh open, agent takeover, restore, structural load):
+    //     RESET — it's genuinely a new document, old history no longer applies.
+    const sameGraph =
+      !!prev &&
+      sameIdSet(prev.nodes, initial.nodes) &&
+      sameIdSet(prev.edges, initial.edges);
+    if (sameGraph) rebaseHistory(initial.nodes, initial.edges);
+    else resetHistory();
+  }, [initial, setNodes, setEdges, resetHistory, rebaseHistory]);
 
   // NOTE: selection + edit mode are NOT written into node.data — selection
   // comes from ReactFlow's `selected` NodeProp, edit mode from EditModeContext,
   // and draggability from the <ReactFlow nodesDraggable> prop. That keeps node
   // data identities stable across selection/mode changes so React.memo holds.
+
+  // Collab interaction-gate backstop: a drag/resize ALWAYS ends with a pointer
+  // release, but a specific terminal NodeChange (dragging:false / resizing:false)
+  // can be missed (pointer released off-canvas, group-resize's own pointer path,
+  // a dropped final frame). A window pointerup/cancel guarantees the gate closes
+  // and deferred peer ops flush — so it can never stick open and freeze remotes.
+  useEffect(() => {
+    if (!interactingRefProp) return; // collab off → no gate to manage
+    const done = () => endInteraction();
+    window.addEventListener("pointerup", done);
+    window.addEventListener("pointercancel", done);
+    return () => {
+      window.removeEventListener("pointerup", done);
+      window.removeEventListener("pointercancel", done);
+    };
+  }, [interactingRefProp, endInteraction]);
 
   // Esc exits "paste style" mode.
   useEffect(() => {
@@ -451,22 +626,51 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
     return () => window.removeEventListener("keydown", onKey);
   }, [editMode]);
 
-  // --- Persistence: debounce-save the layout whenever nodes/edges settle ----
+  // --- Persistence: persist the layout as it changes -----------------------
   const persistRef = useRef(onPersist);
   persistRef.current = onPersist;
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Fast broadcast throttle: `onPersist` writes to the shared store (Yjs doc),
+  // which broadcasts to peers. We want that to feel INSTANT — a peer shouldn't
+  // wait for the history-burst debounce (that made remote edits lag ~700ms). So
+  // persist on a short ~50ms throttle (coalesces a fast drag's per-pixel frames
+  // into a smooth stream without thrashing), and keep the 700ms timer ONLY for
+  // ending the undo/redo history burst. The DURABLE architecture.md save is
+  // debounced separately downstream (use-arch-doc's writer snapshot), so a
+  // frequent doc write here is cheap (tiny CRDT deltas), not a file write.
+  const fastPersist = useRef(0);
+  const fastPending = useRef<{ nds: Node[]; eds: Edge[] } | null>(null);
+  const fastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scheduleSave = useCallback((nds: Node[], eds: Edge[]) => {
-    // History = ONE entry per logical action (burst). A drag/resize fires
-    // scheduleSave on every pixel; we push the pre-burst baseline onto the undo
-    // stack only at the START of a burst (timer not pending), and snapshot the
-    // FINAL state at burst end (in the timeout below).
+    // History = ONE entry per logical action (burst): push the pre-burst baseline
+    // at burst START (timer not pending), snapshot the FINAL state at burst END.
     if (!saveTimer.current) beginBurst();
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       endBurst(nds, eds);
-      persistRef.current(flowToLayout(nds, eds, schema));
       saveTimer.current = null; // burst ended → next change starts a new burst
     }, 700);
+    // Near-instant persist (broadcast). Trailing-throttle at ~50ms so a fast drag
+    // coalesces and the final frame always lands.
+    //
+    // CRITICAL: the flush is ALWAYS scheduled on a timer, NEVER run synchronously
+    // here. scheduleSave is frequently called from INSIDE a setNodes/setEdges
+    // updater (e.g. removeEdge/removeNode), which React runs DURING RENDER. A
+    // synchronous flush → persistTab → ydoc.transact → the doc observer's
+    // setTabBodies would be "setState in PlatformDiagram while rendering Canvas"
+    // (the React warning + a real cross-component render hazard). Deferring to a
+    // timer runs the persist AFTER the current render/commit — safe.
+    const FAST_MS = 50;
+    const flush = () => {
+      fastTimer.current = null;
+      fastPersist.current = Date.now();
+      const p = fastPending.current;
+      if (p) { fastPending.current = null; persistRef.current(flowToLayout(p.nds, p.eds, schema)); }
+    };
+    fastPending.current = { nds, eds };
+    if (fastTimer.current) return; // a flush is already scheduled; it'll pick up the latest pending
+    const since = Date.now() - fastPersist.current;
+    fastTimer.current = setTimeout(flush, Math.max(0, FAST_MS - since));
   }, [schema, beginBurst, endBurst]);
   // Keep the node-mutation reducers (onResize/onRename/onAnnotate) pointed at the
   // live setNodes/scheduleSave/edges now that those exist.
@@ -490,6 +694,23 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
   // per drag and undo barely moves.
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
+      // Collab interaction gate: while a local drag/resize is IN FLIGHT, tell the
+      // parent to defer peer ops (else a mid-interaction reseed flashes/janks the
+      // move — see interactingRef in platform-diagram.tsx). A drag emits `position`
+      // with dragging:true per frame then dragging:false on drop; a resize emits
+      // `dimensions` with resizing:true then resizing:false on release. Open the
+      // gate on either "in-progress" signal; close it (flushing deferred ops) on
+      // either terminal signal or a remove.
+      const inProgress = changes.some(
+        (c) => (c.type === "position" && c.dragging === true) ||
+               (c.type === "dimensions" && c.resizing === true),
+      );
+      if (inProgress) beginInteraction();
+      const settled = changes.some(
+        (c) => (c.type === "position" && c.dragging === false) ||
+               (c.type === "dimensions" && c.resizing === false) ||
+               c.type === "remove",
+      );
       // Edge-based magnet: rewrite every position change (live drag frames AND
       // the drop) so the node's TOP-LEFT edge snaps to the 16px grid. Doing it
       // here (rather than via RF's snapToGrid, which snaps the CENTER because
@@ -538,19 +759,31 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
           changes.flatMap((c) => (c.type === "position" && c.dragging === false ? [c.id] : [])),
         );
         setNodes((nds) => {
-          const next = dropped.size
+          const pinnedNext = dropped.size
             ? nds.map((n) =>
                 dropped.has(n.id) && !(n.data as NodeData).pinned
                   ? { ...n, data: { ...(n.data as NodeData), pinned: true } }
                   : n,
               )
             : nds;
+          // INSTANT relative reflow: a moved node in a relative column makes the
+          // symbolic (un-pinned) siblings re-stack. That reflow otherwise only
+          // appeared AFTER the save round-trip (the lag). Recompute it LOCALLY now
+          // — serialize → parse (runs computeLayout) → patch ONLY the siblings'
+          // positions IN PLACE (node identities kept, so selection/undo survive;
+          // the dropped node keeps its just-set pixel position). Best-effort: any
+          // hiccup falls back to the (correct) round-trip reflow.
+          const next = dropped.size ? reflowRelativeSiblings(pinnedNext, edges, schema, dropped) : pinnedNext;
           scheduleSave(next, edges);
           return next;
         });
       }
+      // Interaction settled (drop / resize-release / remove) → close the gate and
+      // let the parent replay any peer op it deferred during the move. Done AFTER
+      // the local change is applied, so the deferred reseed can't race the commit.
+      if (settled) endInteraction();
     },
-    [onNodesChange, setNodes, scheduleSave, edges],
+    [onNodesChange, setNodes, scheduleSave, edges, schema, beginInteraction, endInteraction],
   );
 
   const onConnect = useCallback(
@@ -660,39 +893,38 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
   );
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const setDropTarget = useCallback((nid: string | null) => setDropTargetId(nid), []);
-  // A composite block's named ports as absolute flow-coord anchors so a drag
-  // INTO the block snaps to (and targets) the RIGHT one, not just a single side.
+  // A composite block's named ports as absolute flow-coord anchors so a RECONNECT
+  // drag INTO the block snaps to (and targets) the RIGHT anchor, not just a single
+  // side. UNIFIED with new-edge creation: both derive anchors from the block's
+  // ACTUALLY-RENDERED handles. New-edge creation reads them implicitly (RF reports
+  // the DOM handle under the cursor as params.targetHandle); reconnect reads RF's
+  // MEASURED `handleBounds.source` here — the SAME source of truth. So any
+  // composite whose handle set depends on its options (governance's per-surface
+  // @acl/@ontology/@ai-gateway, the medallion's fork rows, lakeflow's in-* ports)
+  // works for BOTH paths automatically, with no per-kind list to keep in sync.
   const portsOf = useCallback(
     (nid: string): { handle: string; x: number; y: number }[] => {
       const n = nodesRef.current.find((x) => x.id === nid);
       const kind = (n?.data as NodeData | undefined)?.component.kind;
       const r = nodeRect(nid);
-      if (!n || !r) return [];
+      if (!n || !r || !kind) return []; // only composites have named ports
+      // Every ConnectionDot renders a `type="source"` handle, so ALL of a block's
+      // anchors live in handleBounds.source. Read them as absolute flow coords.
+      const internal = getInternalNode(nid) as
+        | { internals?: { handleBounds?: { source?: { id?: string | null; x: number; y: number; width: number; height: number }[] | null } | null } }
+        | undefined;
+      const src = internal?.internals?.handleBounds?.source ?? [];
+      const measured = src
+        .filter((h) => !!h.id)
+        .map((h) => ({ handle: h.id as string, x: r.x + h.x + h.width / 2, y: r.y + h.y + h.height / 2 }));
+      if (measured.length) return measured;
+      // Not measured yet (block just mounted): fall back to lakeflow's computed
+      // input ports so an immediate reconnect still snaps sensibly.
       if (kind === "lakeflow") {
         return [
-          // Left-edge input ports …
           ...LF_PORTS.map((p) => ({ handle: `in-${p.port}`, x: r.x, y: r.y + r.h * p.frac })),
-          // … plus the bottom-left anchor (under the files), so a reconnect drag
-          // can snap to it (matches `portAnchor`'s {side:"b", frac:0.08}).
           { handle: "bl", x: r.x + r.w * 0.08, y: r.y + r.h },
         ];
-      }
-      if (kind === "medallion-table") {
-        // The medallion's fork OUTPUT rows (out-mv / out-gold / out-fs) are on the
-        // right and their Y depends on the current fork layout — so read RF's
-        // MEASURED handle bounds (the ground truth) instead of recomputing. Local
-        // (node-space) centres → absolute flow coords via the node rect. Exposing
-        // them lets a drag INTO the medallion snap to the correct row, not just
-        // one side. (Falls back to nothing if not measured yet → generic sides.)
-        const internal = getInternalNode(nid) as
-          | { internals?: { handleBounds?: { source?: { id?: string | null; x: number; y: number; width: number; height: number }[] | null } | null } }
-          | undefined;
-        const src = internal?.internals?.handleBounds?.source ?? [];
-        // Expose the fork OUTPUT rows (right) AND the generic sides (l/t/b) so a
-        // drag can snap to any of them by proximity.
-        return src
-          .filter((h) => h.id && (h.id.startsWith("out-") || ["l", "t", "b"].includes(h.id)))
-          .map((h) => ({ handle: h.id as string, x: r.x + h.x + h.width / 2, y: r.y + h.y + h.height / 2 }));
       }
       return [];
     },
@@ -714,15 +946,11 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
       if (!found) return;
       const pos = at ?? { x: 120, y: 120 };
       setNodes((nds) => {
-        // Same component can be placed more than once: if the base id is taken,
-        // mint a fresh instance id (`<id>#2`, `#3`, …) so node ids stay unique.
+        // Same component can be placed more than once: mint a collision-free
+        // instance id (bare base, else base#<rand> — random so concurrent adds by
+        // two collaborators don't both compute the same #N and clobber).
         const base = baseId(componentId);
-        let nodeId = base;
-        if (nds.some((n) => n.id === nodeId)) {
-          let k = 2;
-          while (nds.some((n) => n.id === `${base}#${k}`)) k++;
-          nodeId = `${base}#${k}`;
-        }
+        const nodeId = mintInstanceId(base, (id) => nds.some((n) => n.id === id));
         const fp = nodeFootprint(found.component, {});
         // A freshly-added node becomes THE selection (deselect the rest) so its
         // edit panel opens right away. onSelectionChange syncs selectedIds.
@@ -738,6 +966,7 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
             selected: true,
             data: {
               nodeId,
+              type: base,
               component: found.component,
               bandId: found.bandId,
               bandColor: BAND_COLOR[found.bandId],
@@ -778,8 +1007,11 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
         // effect deliberately skips mount to respect manual/persisted sizes.
         const cap = annotation.caption === "side" ? "right" : annotation.caption === "below" ? "bottom" : annotation.caption;
         const positionedLogo = variant === "logo" && (cap === "right" || cap === "left" || cap === "top" || cap === "bottom");
+        // Size a captioned logo to its full icon+caption footprint (same
+        // `logoFootprint` the render + layout use) so the box wraps the centered
+        // unit and the add-time box matches what a reload derives.
         const sz = positionedLogo
-          ? logoFitSize(annotation.text ?? "", cap === "right" || cap === "left", annotation.fontSize ?? 13, annotation.bold)
+          ? logoFootprint(ANNOTATION_DEFAULT_SIZE.logo.w, ANNOTATION_DEFAULT_SIZE.logo.h, annotation)
           : ANNOTATION_DEFAULT_SIZE[variant];
         const next = [
           // Deselect the rest; the new annotation is THE selection so its edit
@@ -792,9 +1024,14 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
             width: sz.w,
             height: sz.h,
             style: { width: sz.w, height: sz.h },
+            // Front layer + selected on add. Without an explicit zIndex a fresh
+            // node renders below the NODE_Z tiles (looked like it "dropped behind
+            // everything" until the save round-trip re-seeded it at NODE_Z).
+            zIndex: NODE_Z,
             selected: true,
             data: {
               nodeId: id,
+              type: annotation.variant,
               annotation,
               // Carry w/h into data so RotatableCard renders at the SAME size as
               // the ReactFlow node box on add — otherwise the card falls back to
@@ -839,7 +1076,7 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
     setNodes((nds) => {
       if (nds.some((n) => n.id === id)) return nds;
       const fp = nodeFootprint(component, {});
-      const srcYs = nds.filter((n) => baseId(n.id).startsWith("src-")).map((n) => n.position.y);
+      const srcYs = nds.filter((n) => (n.data as NodeData).type === "source" || baseId(n.id).startsWith("src-")).map((n) => n.position.y);
       const y = srcYs.length ? Math.max(...srcYs) + 96 : 0;
       const next = [
         // Deselect the rest; the new source is THE selection → its edit panel
@@ -849,7 +1086,7 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
           id, type: "component", position: { x: 0, y }, width: fp.w, height: fp.h, style: { width: fp.w, height: fp.h },
           selected: true,
           data: {
-            nodeId: id, component, bandId: "sources" as BandId, bandColor: BAND_COLOR.sources,
+            nodeId: id, type: "source", component, bandId: "sources" as BandId, bandColor: BAND_COLOR.sources,
             deepLink: null, onSelect, onContext, onResize, onRename, onSetDescription,
             allowTrademark: !!schema.enableTrademarkLogos,
             sourceKey: key,
@@ -874,7 +1111,7 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
       if (anno) {
         const id = addAnnotation(anno as AnnotationVariant, pos);
         if (anno === "logo") setLogoPickerFor(id); // pick the logo right away
-        else if (anno === "text") setAutoEditFor(id); // cursor into the text now
+        else if (anno === "text" || anno === "note") setAutoEditFor(id); // cursor into the text now
         return;
       }
       const preset = e.dataTransfer.getData("application/x-annotation-preset");
@@ -1099,16 +1336,12 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
     setNodes((nds) => {
       if (!nds.some((n) => n.id === id)) return nds;
       const dd = nds.find((n) => n.id === id)!.data as NodeData;
-      const oldBase = catalog.get(baseId(id))?.component;
+      const oldBase = catalog.get(dd.type)?.component;
       const renamed = oldBase && dd.component.label !== oldBase.label;
-      // Mint a unique node id for the new type (dedupe like addComponent).
-      const wanted = found.component.id;
-      let newId = wanted;
-      if (nds.some((n) => n.id === newId && n.id !== id)) {
-        let k = 2;
-        while (nds.some((n) => n.id === `${wanted}#${k}`)) k++;
-        newId = `${wanted}#${k}`;
-      }
+      // The node id stays STABLE — only its `type` + component swap. (Component
+      // identity is `data.type`, not the id, so there's no id to re-mint and no
+      // edge source/target to remap — edges stay attached by id.)
+      const newType = found.component.id;
       const component = renamed ? { ...found.component, label: dd.component.label } : found.component;
       const fp = nodeFootprint(component, { w: dd.w, h: dd.h, rot: dd.rot });
       const next = nds.map((n) =>
@@ -1116,35 +1349,25 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
           ? n
           : {
               ...n,
-              id: newId,
               type: nodeTypeFor(component),
               width: fp.w,
               height: fp.h,
               style: { ...n.style, width: fp.w, height: fp.h },
-              data: { ...dd, nodeId: newId, component, bandId: found.bandId, bandColor: BAND_COLOR[found.bandId], deepLink: deepLinks[baseId(newComponentId)] ?? null },
+              data: { ...dd, type: newType, component, bandId: found.bandId, bandColor: BAND_COLOR[found.bandId], deepLink: deepLinks[newType] ?? null },
             },
       );
-      // Rewire edges from the old id → new id. The new type may have a
-      // different anchor set (e.g. a Lakeflow composite has named ports
-      // `in-*`/`bl`, a plain tile only t/r/b/l). Keep the handle when it's still
-      // valid; otherwise collapse it to the equivalent SIDE so the edge stays
-      // attached on the same side rather than dangling on a missing handle.
+      // The new type may have a different anchor set (e.g. a Lakeflow composite
+      // has named ports `in-*`/`bl`, a plain tile only t/r/b/l). Keep each handle
+      // when still valid; otherwise collapse it to the equivalent SIDE so the edge
+      // stays attached rather than dangling on a missing handle. (No id remap —
+      // the node id is unchanged.)
       const newHasPorts = component.kind === "lakeflow" || component.kind === "lakeflow-genie";
       setEdges((eds) => {
-        const seen = new Set<string>();
-        const e2 = eds
-          .map((e) => ({
-            ...e,
-            ...(e.source === id ? { source: newId, sourceHandle: remapHandleForType(e.sourceHandle, newHasPorts) } : {}),
-            ...(e.target === id ? { target: newId, targetHandle: remapHandleForType(e.targetHandle, newHasPorts) } : {}),
-          }))
-          .filter((e) => {
-            if (e.source === e.target) return false; // self-loop from the swap
-            const k = `${e.source}->${e.target}`;
-            if (seen.has(k)) return false;
-            seen.add(k);
-            return true;
-          });
+        const e2 = eds.map((e) => ({
+          ...e,
+          ...(e.source === id ? { sourceHandle: remapHandleForType(e.sourceHandle, newHasPorts) } : {}),
+          ...(e.target === id ? { targetHandle: remapHandleForType(e.targetHandle, newHasPorts) } : {}),
+        }));
         scheduleSave(next, e2);
         return e2;
       });
@@ -1187,16 +1410,15 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
       const taken = new Set(nds.map((n) => n.id));
       const idMap = new Map<string, string>(); // old id → new id
       const mkId = (oldId: string): string => {
-        // Annotations get a fresh anno-* id; others use the <base>#<n> dedupe.
-        const base = oldId.startsWith("anno-")
-          ? `anno-${Date.now().toString(36)}-${annoCounter.current++}`
-          : baseId(oldId);
-        let nid = base;
-        if (taken.has(nid)) {
-          let k = 2;
-          while (taken.has(`${base}#${k}`)) k++;
-          nid = `${base}#${k}`;
+        // Annotations get a fresh time+counter anno-* id (already collision-safe).
+        // Others mint base / base#<rand> — random so a concurrent paste by a peer
+        // can't compute the same #N and clobber on the shared doc.
+        if (oldId.startsWith("anno-")) {
+          const nid = `anno-${Date.now().toString(36)}-${annoCounter.current++}`;
+          taken.add(nid);
+          return nid;
         }
+        const nid = mintInstanceId(baseId(oldId), (id) => taken.has(id));
         taken.add(nid);
         return nid;
       };
@@ -1270,7 +1492,7 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
   const selected = useMemo(() => {
     if (!selectedId) return null;
     if (selectedNodeData?.component && selectedNodeData.bandId) return { component: selectedNodeData.component, bandId: selectedNodeData.bandId };
-    return catalog.get(baseId(selectedId)) ?? null;
+    return (selectedNodeData?.type ? catalog.get(selectedNodeData.type) : undefined) ?? catalog.get(baseId(selectedId)) ?? null;
   }, [selectedId, selectedNodeData, catalog]);
   // Base ids of every placed instance — the library dims a catalog item when at
   // least one instance is on the canvas (but it stays draggable for duplicates).
@@ -1281,7 +1503,7 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
   // main remaining resize/selection jank). The membership key is O(N) string
   // work per commit; the Set (and the palette) only rebuild on add/remove.
   const placedKey = useMemo(
-    () => Array.from(new Set(nodes.map((n) => baseId(n.id)))).sort().join(" "),
+    () => Array.from(new Set(nodes.map((n) => (n.data as NodeData).type))).sort().join(" "),
     [nodes],
   );
   const placedIds = useMemo(() => new Set(placedKey ? placedKey.split(" ") : []), [placedKey]);
@@ -1372,10 +1594,44 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
         const top = Math.round((n.position.y - oy * h) / GRID) * GRID + uy * GRID;
         return { ...n, position: { x: left + ox * w, y: top + oy * h }, data: pinData };
       });
-      scheduleSave(next, edges);
-      return next;
+      // Same instant relative reflow as drag-drop: re-stack the symbolic siblings
+      // (and re-size any wrapping box) locally so it doesn't lag the round-trip.
+      const moved = new Set(nds.filter((n) => n.selected).map((n) => n.id));
+      const reflowed = reflowRelativeSiblings(next, edges, schema, moved);
+      scheduleSave(reflowed, edges);
+      return reflowed;
     });
-  }, [setNodes, scheduleSave, edges]);
+  }, [setNodes, scheduleSave, edges, schema]);
+
+  // Group resize: apply scaled rects (top-left + size, flow coords) from the
+  // multi-selection frame to each node — position (converted top-left → the
+  // canvas's center origin), size (width/height/style/data.w/h), and PIN it
+  // (a scaled node is now fixed-size, exactly like a single-node resize). Fires
+  // live during the drag; scheduleSave coalesces it into one history burst.
+  const onGroupScale = useCallback((next: GroupScale[]) => {
+    beginInteraction(); // group resize runs its own pointer path; window pointerup closes the gate
+    const byId = new Map(next.map((r) => [r.id, r]));
+    setNodes((nds) => {
+      const applied = nds.map((n) => {
+        const r = byId.get(n.id);
+        if (!r) return n;
+        const dd = n.data as NodeData;
+        const [ox, oy] = (n.origin as [number, number] | undefined) ?? NODE_ORIGIN;
+        const w = Math.max(16, Math.round(r.w));
+        const h = Math.max(16, Math.round(r.h));
+        return {
+          ...n,
+          position: { x: r.x + ox * w, y: r.y + oy * h }, // top-left → origin-relative
+          width: w,
+          height: h,
+          style: { ...n.style, width: w, height: h },
+          data: { ...dd, w, h, pinned: true },
+        };
+      });
+      scheduleSave(applied, edges);
+      return applied;
+    });
+  }, [setNodes, scheduleSave, edges, beginInteraction]);
   // Keep the window keydown effect's handlers pointed at the live callbacks
   // (the effect binds once per editMode; refs let it reach the current closures).
   editKeyHandlersRef.current = {
@@ -1387,7 +1643,27 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
     // Duplicate = copy + paste in one step (the paste offsets +24 like Figma).
     duplicate: () => { if (selectedIds.length) { copySelection(); pasteClipboard(); } },
     rotate: () => { if (panelPrimaryId) rotateNode(panelPrimaryId); },
-    remove: () => { if (selectedIds.length) { const ids = [...selectedIds]; clearSelection(); ids.forEach(removeNode); } },
+    // Delete/Backspace removes the current selection — NODES (selectedIds) AND
+    // the selected EDGE(S). Edges track selection on the ReactFlow edge object
+    // (edge.selected), separate from selectedIds (nodes only), OR the docked edge
+    // panel targets menu.id — so a selected line pressed-Delete previously matched
+    // NEITHER branch and silently did nothing (menu stayed open, nothing persisted,
+    // edge back on refresh). Handle both, and route edges through removeEdge so
+    // the deletion actually saves.
+    remove: () => {
+      // editKeyHandlersRef is reassigned every render, so `edges`/`menu` here are
+      // the current-render values (no ref needed).
+      const edgeIds = edges.filter((e) => e.selected).map((e) => e.id);
+      // The docked edge menu is a selection too: if a line's edit panel is open,
+      // its id is the delete target even when RF didn't flag `selected`.
+      if (menu?.kind === "edge") edgeIds.push(menu.id);
+      const nodeIds = [...selectedIds];
+      if (!edgeIds.length && !nodeIds.length) return;
+      clearSelection();
+      setMenu(null);
+      Array.from(new Set(edgeIds)).forEach(removeEdge);
+      nodeIds.forEach(removeNode);
+    },
   };
 
   // Memoized EditPanel handlers. The panel is `memo`'d; feeding it fresh inline
@@ -1403,7 +1679,7 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
   // its current params, and a setter that writes one key into node.data.params.
   const panelOptions = selectedIds.length === 1 ? panelPrimaryData?.component.options : undefined;
   const panelParams = panelPrimaryData?.params;
-  const panelOnSetParam = useCallback((key: string, value: boolean) => {
+  const panelOnSetParam = useCallback((key: string, value: boolean | string) => {
     if (!panelPrimaryId) return;
     setNodes((nds) => {
       const next = nds.map((n) => {
@@ -1433,10 +1709,15 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
     });
   }, [panelPrimaryId, setNodes, setEdges, scheduleSave, edges]);
   // Editable block title — only composites that carry one (the medallion table).
-  const panelHasTitle = selectedIds.length === 1 && panelPrimaryData?.component.kind === "medallion-table";
-  // Show the user's title in the input; blank (→ "Title…" placeholder) when it's
-  // still the catalog default, so the block's own "Ingestion (SDP)" default shows.
-  const panelNodeTitle = panelHasTitle && panelPrimaryData?.component.label !== "Medallion Table"
+  // Composites with an editable block title: the medallion table + both Lakeflow
+  // blocks (their header is a customizable title, default "Lakeflow: …").
+  const TITLED_KINDS = new Set(["medallion-table", "lakeflow", "lakeflow-genie"]);
+  const panelHasTitle = selectedIds.length === 1 && !!panelPrimaryData && TITLED_KINDS.has(panelPrimaryData.component.kind ?? "");
+  // Show the user's title in the input; blank (→ placeholder) when it's still the
+  // catalog default, so the block's own default header shows. Each titled kind's
+  // catalog label(s) count as "default".
+  const TITLE_DEFAULT_LABELS = new Set(["Medallion Table", "Lakeflow", "Lakeflow + Genie"]);
+  const panelNodeTitle = panelHasTitle && !TITLE_DEFAULT_LABELS.has(panelPrimaryData?.component.label ?? "")
     ? panelPrimaryData?.component.label : "";
   const panelOnSetTitle = useCallback((t: string) => { if (panelPrimaryId) onRename(panelPrimaryId, t); }, [panelPrimaryId, onRename]);
   const panelOnAnno = useCallback((patch: Partial<AnnotationData>) => {
@@ -1465,7 +1746,7 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
   const panelOnUngroup = useCallback(() => { if (panelPrimaryId) ungroupNode(panelPrimaryId); }, [panelPrimaryId, ungroupNode]);
   const panelOnZ = useCallback((dir: "front" | "back") => setNodeZ(styleTargets, dir), [setNodeZ, styleTargets]);
   // Source tiles get a label-position control in the panel.
-  const panelIsSource = !!panelPrimaryData?.sourceKey || (!!panelPrimaryId && baseId(panelPrimaryId).startsWith("src-"));
+  const panelIsSource = (panelPrimaryData as NodeData | undefined)?.type === "source" || !!panelPrimaryData?.sourceKey || (!!panelPrimaryId && baseId(panelPrimaryId).startsWith("src-"));
   const panelOnSetSourceCaption = useCallback(
     (pos: "right" | "left" | "top" | "bottom") => { if (panelPrimaryId) setSourceCaption(panelPrimaryId, pos); },
     [panelPrimaryId, setSourceCaption],
@@ -1508,7 +1789,7 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
   // callbacks are already stable, so these thin adapters only need wrapping.
   const paletteOnAdd = useCallback((id: string) => addComponent(id), [addComponent]);
   const paletteOnAddAnnotation = useCallback(
-    (v: AnnotationVariant) => { const id = addAnnotation(v); if (v === "logo") setLogoPickerFor(id); else if (v === "text") setAutoEditFor(id); },
+    (v: AnnotationVariant) => { const id = addAnnotation(v); if (v === "logo") setLogoPickerFor(id); else if (v === "text" || v === "note") setAutoEditFor(id); },
     [addAnnotation],
   );
   const paletteOnAddPreset = useCallback(
@@ -1546,7 +1827,7 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
     <EdgeOpsContext.Provider value={edgeOps}>
     <DropTargetContext.Provider value={dropTargetId}>
     <SingleSelectionContext.Provider value={singleSelection}>
-    <div className="flex min-h-0 flex-1" ref={wrapRef} onWheelCapture={onWheelCapture} onPointerMove={collab ? onPointerMoveCursor : undefined}>
+    <div className="flex min-h-0 flex-1" ref={wrapRef} onPointerMove={collab ? onPointerMoveCursor : undefined}>
       {editMode && (
         <LibraryPalette
           schema={schema}
@@ -1603,29 +1884,47 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
         </svg>
 
         {/* floating action bar — hidden entirely in hard read-only (the
-            standalone viewer shows only the diagram). */}
+            standalone viewer shows only the diagram). Sits at top-8 (not top-3)
+            so the multi-tab strip above has room to wrap onto a second row
+            without colliding with these controls. */}
         {!readOnly && (
-        <div className="absolute right-3 top-3 z-10 flex items-center gap-1.5">
-          {/* Share live with others — opens the Share dialog (link + invite).
-              Highlighted when someone else is already in the room. */}
-          {onShareLive && (
-            <button
-              type="button"
-              onClick={onShareLive}
-              title="Share this architecture live with others"
-              className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-border bg-card/95 px-2.5 py-1.5 text-[11px] font-medium text-foreground shadow-sm backdrop-blur transition-colors hover:border-primary/50 hover:bg-primary/5"
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-primary">
-                <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
-                <line x1="8.6" y1="10.5" x2="15.4" y2="6.5" /><line x1="8.6" y1="13.5" x2="15.4" y2="17.5" />
-              </svg>
-              Share live
-              {collab && collab.members.length > 1 && (
-                <span className="ml-0.5 rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
-                  {collab.members.length}
-                </span>
+        <div className="absolute right-3 top-8 z-10 flex items-center gap-1.5">
+          {/* History + Share live — grouped in one pill (matches the View/Edit
+              group), borderless inner buttons split by a divider. In-app only. */}
+          {(onToggleHistory || onShareLive) && (
+            <div className="flex items-center gap-0.5 rounded-lg border border-border bg-card/95 p-1 shadow-sm backdrop-blur">
+              {onToggleHistory && (
+                <button
+                  type="button"
+                  onClick={onToggleHistory}
+                  title="Architecture history"
+                  className="flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-foreground hover:bg-muted"
+                >
+                  <Clock className="h-3.5 w-3.5 text-primary" />
+                  History
+                </button>
               )}
-            </button>
+              {onToggleHistory && onShareLive && <div className="mx-0.5 h-5 w-px bg-border" />}
+              {onShareLive && (
+                <button
+                  type="button"
+                  onClick={onShareLive}
+                  title="Share this architecture live with others"
+                  className="flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-foreground hover:bg-muted"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-primary">
+                    <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                    <line x1="8.6" y1="10.5" x2="15.4" y2="6.5" /><line x1="8.6" y1="13.5" x2="15.4" y2="17.5" />
+                  </svg>
+                  Share live
+                  {collab && collab.members.length > 1 && (
+                    <span className="ml-0.5 rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
+                      {collab.members.length}
+                    </span>
+                  )}
+                </button>
+              )}
+            </div>
           )}
           {/* Save-status icon OUTSIDE the bar, to its left — so an idle/empty
               status leaves no gap inside the bar. */}
@@ -1742,9 +2041,9 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
           // pans with the middle/right button (PAN_ON_DRAG).
           selectionOnDrag={editMode}
           panOnDrag={editMode ? PAN_ON_DRAG : true}
-          // Wheel behavior is device-aware (see `onWheelCapture` on the wrapper
-          // below): a MOUSE WHEEL zooms to the cursor (ReactFlow's built-in
-          // zoomOnScroll), a TRACKPAD two-finger scroll pans. We keep
+          // Wheel behavior is device-aware (see the native non-passive `wheel`
+          // listener on the wrapper): a MOUSE WHEEL zooms to the cursor (ReactFlow's
+          // built-in zoomOnScroll), a TRACKPAD two-finger scroll pans. We keep
           // zoomOnScroll ON for the mouse-wheel-zoom default and intercept only
           // the trackpad-pan gesture to pan instead — so no modifier key is
           // needed for either. Pinch still zooms.
@@ -1762,11 +2061,13 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
           // focused node to the 16px grid on every arrow press (Shift jumps even
           // further). Our own window keydown handler does the precise 1px nudge.
           disableKeyboardA11y
-          // Initial fit uses RF defaults (same as the <Controls> fit button);
-          // the useNodesInitialized effect above re-fits once nodes are measured,
-          // also bare, so the auto-fit matches the button exactly (no custom
-          // padding/maxZoom that made it render smaller).
+          // Initial fit is CAPPED at 1× (FIT_VIEW_OPTIONS.maxZoom) so a sparse
+          // canvas (0–1 nodes) doesn't blow its tiny bbox up to the global 2×
+          // maxZoom — see FIT_VIEW_OPTIONS. The user can still zoom the full
+          // 0.3–2 range by hand. The readOnly refit effect above uses the same
+          // options so previews frame identically.
           fitView
+          fitViewOptions={FIT_VIEW_OPTIONS}
           minZoom={0.3}
           maxZoom={2}
           proOptions={PRO_OPTIONS}
@@ -1792,6 +2093,16 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
           {/* Live peer cursors — inside <ReactFlow> so they re-render on
               pan/zoom (via useStore) and overlay the pane. */}
           {collab && <CollabCursors members={collab.members} meConnId={collab.meConnId} />}
+          {/* Group-resize frame for a MULTI-selection — one frame around the whole
+              selection; dragging a corner scales every selected node uniformly.
+              (Per-node handles are single-selection only; see shared.tsx.) */}
+          {editMode && selectedIds.length > 1 && (
+            <GroupResize
+              rects={nodes.filter((n) => n.selected).map(rectOfNode)}
+              toFlow={(cx, cy) => screenToFlowPosition({ x: cx, y: cy })}
+              onScale={onGroupScale}
+            />
+          )}
         </ReactFlow>
 
         {/* Searchable logo picker for a "Logo" annotation. Honors the
@@ -1799,7 +2110,12 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
         {logoPickerFor && (
           <IconPicker
             allowTrademark={!!schema.enableTrademarkLogos}
-            onPick={(key) => onAnnotate(logoPickerFor, { icon: key })}
+            onPick={(key) => {
+              // A BOX carries its logo in the title legend (`titleIcon`); a LOGO
+              // annotation carries it as its main `icon`. Set the right field.
+              const variant = (nodesRef.current.find((n) => n.id === logoPickerFor)?.data as AnnotationNodeData | undefined)?.annotation?.variant;
+              onAnnotate(logoPickerFor, variant === "box" ? { titleIcon: key } : { icon: key });
+            }}
             onClose={() => setLogoPickerFor(null)}
           />
         )}
@@ -1868,6 +2184,9 @@ export const Canvas = memo(function Canvas({ schema, deepLinks, onPersist, onSet
           onSetParam={panelOnSetParam}
           nodeTitle={panelHasTitle ? panelNodeTitle : undefined}
           onSetTitle={panelHasTitle ? panelOnSetTitle : undefined}
+          titlePlaceholder={panelHasTitle
+            ? (panelPrimaryData?.component.kind === "medallion-table" ? "Ingestion (SDP)" : "Lakeflow: Data ingestion and processing")
+            : undefined}
           onClose={clearSelection}
           onRotate={panelOnRotate}
           onRemove={panelOnRemove}

@@ -105,7 +105,7 @@ INCIDENT_SUMMARY = (
     "QC assessment: 'Minor texture variations due to pressure fluctuations "
     "during emulsification — cosmetic only; safety and efficacy unaffected.' "
     "Disposition: RELEASED."
-).replace("'", "’")  # curly apostrophe so the string is SQL-literal-safe
+)
 
 N_CUSTOMERS = 50_000
 N_ORDERS    = 200_000   # ~3.8K/week baseline per 01-lakeflow spec
@@ -121,7 +121,7 @@ print(f"SPIKE_PEAK:  {SPIKE_PEAK.date()}")
 try:
     spark  # noqa: F821
 except NameError:
-    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    spark = DatabricksSession.builder.profile(os.environ.get("DATABRICKS_CONFIG_PROFILE", "DEFAULT")).serverless(True).getOrCreate()
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
 
 
@@ -656,12 +656,19 @@ for col, txt in {
     "facility": "Manufacturing facility (Lyon-France / Milan-Italy / London-UK / NJ-USA).",
     "refund_amount_usd": "Refund amount in USD.",
     "return_reason": "Reason taxonomy: quality / didnt_fit / wrong_item / changed_mind.",
-    "return_reason_text": "Free-text reason given by the customer.",
+    "return_reason_text": "Free-text reason in the customer's own words.",  # apostrophe is fine — bound as a param, not string-formatted
     "customer_comment": "Alias for return_reason_text — kept for dashboards that read this column name.",
     "anger_score": "Heuristic sentiment (0..1). Full demo runs ai_classify on the comment.",
     "is_bad_lot": "TRUE for the one affected lot — drives the affected-vs-everyday split across every chart.",
 }.items():
-    spark.sql(f"COMMENT ON COLUMN {CATALOG}.{SCHEMA}.gold_returns.{col} IS '{txt}'")
+    # Pass the comment TEXT as a bound parameter (`IS :txt`, args={...}) — Spark
+    # quotes/escapes it, so apostrophes ("customer's") are safe with no manual
+    # '' escaping. Identifiers (catalog/schema/table/col) are structure, not
+    # values, so they stay in the f-string (backtick-quoted for safety).
+    spark.sql(
+        f"COMMENT ON COLUMN `{CATALOG}`.`{SCHEMA}`.`gold_returns`.`{col}` IS :txt",
+        args={"txt": txt},
+    )
 
 print("Building gold_daily_summary …")
 spark.sql(f"""
@@ -697,7 +704,10 @@ for col, txt in {
     "items_sold": "Units sold that day.", "revenue_usd": "Order revenue in USD.",
     "return_count": "Number of returns that day.", "returns_usd": "Refund amount in USD.",
 }.items():
-    spark.sql(f"COMMENT ON COLUMN {CATALOG}.{SCHEMA}.gold_daily_summary.{col} IS '{txt}'")
+    spark.sql(
+        f"COMMENT ON COLUMN `{CATALOG}`.`{SCHEMA}`.`gold_daily_summary`.`{col}` IS :txt",
+        args={"txt": txt},
+    )
 
 # ── Phase 4 — Constraints (lineage arrows in Catalog Explorer) ─────────────
 print("Applying PK / FK constraints …")

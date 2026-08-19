@@ -93,7 +93,7 @@ for _svg in \
 done
 
 # --- 2. Stage runtime data INTO the package source tree (paths mirror dev) ---
-# The wheel ships .claude/, initial_templates/, and ai_dev_kit/ INSIDE
+# The wheel ships .claude/, initial_templates/, and databricks_agent_skill/ INSIDE
 # src/demo_prompt_generator/ so paths inside the installed package match the
 # dev-tree layout exactly — backend resolvers can use one Path expression for
 # both modes (editable install walks up to repo, wheel install reads from the
@@ -105,8 +105,8 @@ echo -e "${BLUE}[2/4] Staging runtime data inside $PKG_DIR/...${NC}"
 # `git status` stays clean even if the build fails partway through).
 # `bin/` is excluded from cleanup so a cached CLI binary survives across
 # back-to-back builds (the version-check below skips re-download when fresh).
-trap 'rm -rf "$PKG_DIR/.claude" "$PKG_DIR/initial_templates" "$PKG_DIR/ai_dev_kit"' EXIT
-rm -rf "$PKG_DIR/.claude" "$PKG_DIR/initial_templates" "$PKG_DIR/ai_dev_kit"
+trap 'rm -rf "$PKG_DIR/.claude" "$PKG_DIR/initial_templates" "$PKG_DIR/databricks_agent_skill"' EXIT
+rm -rf "$PKG_DIR/.claude" "$PKG_DIR/initial_templates" "$PKG_DIR/databricks_agent_skill"
 
 # NOTE: We do NOT ship the Databricks CLI inside the wheel — the App's
 # bundle-source export path has a 10 MB per-file cap and the CLI binary
@@ -166,38 +166,75 @@ if [[ -d "../.claude/skills/databricks-architecture" ]]; then
 fi
 
 # initial_templates/ — pre-authored seed templates.
-# Copy, then STRIP build/dep/state junk so it never ships to prod/staging: a
-# deploy-test (bundle deploy / build-app.sh) can leave .databricks/, node_modules/,
-# dist/, __pycache__/, .venv/, or a local .env inside a template folder. Those are
-# regenerated at deploy time and must never be baked into the wheel (they'd bloat
-# it + could leak local state). Mirrors seed_templates._should_include_in_template.
+# NOT shipped inside the wheel (they were ~5 MB, pushing the wheel over the Apps
+# 10 MB per-file source-export cap). Instead we clean-stage them here and, in the
+# assemble step below, zip EACH template folder into .build/initial_templates_zips/
+# <slug>.zip. Those small per-template zips ship alongside the wheel (synced via
+# databricks.yml) and start.sh unzips them into a runtime dir on boot; the seeder
+# reads that dir (INITIAL_TEMPLATES_DIR). Per-template zips (not one big file)
+# stay well under the cap and keep the upload to ~a dozen files (no loose-file
+# list-timeout). STRIP build/dep/state junk first (a deploy-test can leave
+# .databricks/, node_modules/, dist/, .venv/, or a local .env in a template).
+# Mirrors seed_templates._should_include_in_template.
+TEMPLATES_STAGE=""
 if [[ -d "../initial_templates" ]]; then
-    cp -r "../initial_templates" "$PKG_DIR/initial_templates"
+    TEMPLATES_STAGE="$(mktemp -d)/initial_templates"
+    cp -r "../initial_templates" "$TEMPLATES_STAGE"
     for junk in .databricks node_modules dist __pycache__ .venv .turbo .next; do
-        find "$PKG_DIR/initial_templates" -type d -name "$junk" -prune -print0 2>/dev/null \
+        find "$TEMPLATES_STAGE" -type d -name "$junk" -prune -print0 2>/dev/null \
             | xargs -0 rm -rf 2>/dev/null || true
     done
-    find "$PKG_DIR/initial_templates" -type f \
+    find "$TEMPLATES_STAGE" -type f \
         \( -name ".env" -o -name ".env.*" -o -name "*.pyc" -o -name ".preview.*" \
            -o -name ".DS_Store" \) -delete 2>/dev/null || true
 fi
 
-# ai_dev_kit/ — clone the Databricks Agent Skills repo (same branch dev.sh uses)
+# databricks_agent_skill/ — clone the Databricks Agent Skills repo (same branch dev.sh uses)
 # so the deployed app has the skill catalog without runtime cloning. Dir name
-# kept as ai_dev_kit/ for path stability. Frozen with the wheel; redeploy to update.
+# kept as databricks_agent_skill/ for path stability. Frozen with the wheel; redeploy to update.
 DAS_REPO="https://github.com/databricks/databricks-agent-skills.git"
-DAS_BRANCH="${DAS_BRANCH:-${AI_DEV_KIT_BRANCH:-main}}"
-if [[ ! -d "$PKG_DIR/ai_dev_kit" ]]; then
-    if [[ -d "ai_dev_kit/.git" ]]; then
+DAS_BRANCH="${DAS_BRANCH:-${DATABRICKS_AGENT_SKILL_BRANCH:-main}}"
+if [[ ! -d "$PKG_DIR/databricks_agent_skill" ]]; then
+    if [[ -d "databricks_agent_skill/.git" ]]; then
         # Fast path: copy the locally cloned repo (already on the right branch
         # from dev.sh). Avoids a network fetch per build.
-        echo "  Bundling ai_dev_kit from local clone (branch $(cd ai_dev_kit && git branch --show-current))"
+        echo "  Bundling databricks_agent_skill from local clone (branch $(cd databricks_agent_skill && git branch --show-current))"
         rsync -a --exclude='.git' --exclude='node_modules' --exclude='__pycache__' \
-            "ai_dev_kit/" "$PKG_DIR/ai_dev_kit/"
+            "databricks_agent_skill/" "$PKG_DIR/databricks_agent_skill/"
     else
         echo "  Cloning databricks-agent-skills ($DAS_REPO branch $DAS_BRANCH) into wheel..."
-        git clone --depth 1 --branch "$DAS_BRANCH" "$DAS_REPO" "$PKG_DIR/ai_dev_kit"
-        rm -rf "$PKG_DIR/ai_dev_kit/.git"
+        git clone --depth 1 --branch "$DAS_BRANCH" "$DAS_REPO" "$PKG_DIR/databricks_agent_skill"
+        rm -rf "$PKG_DIR/databricks_agent_skill/.git"
+    fi
+
+    # Prune DAS to ONLY what the app reads (skills_manager: `skills/*` +
+    # `experimental/databricks-genie`). The repo also ships a `plugins/databricks/`
+    # tree that duplicates every skill 4x (claude/cursor/copilot/codex, ~13 MB)
+    # plus commands/hooks/assets/docs — none of which the app uses, and which
+    # blew the wheel past the Apps 10 MB source-export cap. Keep skills/ +
+    # experimental/, drop the rest.
+    if [[ -d "$PKG_DIR/databricks_agent_skill" ]]; then
+        find "$PKG_DIR/databricks_agent_skill" -mindepth 1 -maxdepth 1 \
+            ! -name "skills" ! -name "experimental" \
+            -exec rm -rf {} + 2>/dev/null || true
+        echo "  Pruned databricks_agent_skill to skills/ + experimental/ (dropped plugins/, commands/, etc.)"
+    fi
+
+    # Prune ai_dev_kit down to ONLY what the deployed app reads at runtime:
+    # `skills/*` + `experimental/databricks-genie` (see backend
+    # skills_manager._iter_source_skill_dirs). The full DAS repo ships a heavy
+    # `plugins/` tree (~11 MB) plus build scripts + other experimental skills
+    # that the generator never loads — and they push the wheel past the Apps
+    # source-export 10 MB per-file cap, which makes `bundle run` fail. Keep the
+    # genie experimental skill, drop everything else under experimental/.
+    if [[ -d "$PKG_DIR/ai_dev_kit" ]]; then
+        find "$PKG_DIR/ai_dev_kit" -maxdepth 1 -mindepth 1 \
+            ! -name 'skills' ! -name 'experimental' -exec rm -rf {} +
+        if [[ -d "$PKG_DIR/ai_dev_kit/experimental" ]]; then
+            find "$PKG_DIR/ai_dev_kit/experimental" -maxdepth 1 -mindepth 1 \
+                ! -name 'databricks-genie' -exec rm -rf {} +
+        fi
+        echo "  Pruned ai_dev_kit to skills/ + experimental/databricks-genie ($(du -sh "$PKG_DIR/ai_dev_kit" 2>/dev/null | cut -f1))"
     fi
 fi
 
@@ -255,28 +292,37 @@ dependencies = [
 ]
 
 # Tell uv to satisfy demo-prompt-generator from the local wheel that ships
-# alongside this pyproject.toml. uv requires `file:` URLs for path deps in
+# alongside this pyproject.toml. uv requires \`file:\` URLs for path deps in
 # [tool.uv.sources]; the leading "./" makes it relative to this file.
 [tool.uv.sources]
 demo-prompt-generator = { path = "./${WHEEL_BASENAME}" }
 EOF
 # Lock against this minimal pyproject. The wheel must be present in the same
 # dir for uv's file:// reference to resolve.
+#
+# Pin the CLOUD (prod) proxy explicitly for this resolve, regardless of the
+# developer's global uv config. The legacy .dev proxy is DEPRECATED (registry
+# proxies moved to cloud.databricks.com; .dev now 403s on /packages/*.metadata).
+# The .cloud proxy mirrors public PyPI's /simple/ + /packages/<hash>/ paths 1:1
+# (verified), so the URL rewrite below keeps hashes valid.
 cp "$WHEEL" "dist/uv-stage/"
-(cd dist/uv-stage && uv lock --quiet)
+(cd dist/uv-stage && UV_INDEX_URL="https://pypi-proxy.cloud.databricks.com/simple/" \
+    uv lock --quiet --no-config)
 
 # Rewrite the internal PyPI proxy out of the lock when deploying to a workspace
-# whose Apps containers can't reach pypi-proxy.dev.databricks.com (e.g. field-eng).
-# The proxy mirrors public PyPI with identical /simple/ and /packages/<hash>/ paths,
-# so a pure URL swap to pypi.org / files.pythonhosted.org keeps hashes valid — no
+# whose Apps containers can't reach pypi-proxy.cloud.databricks.com. The proxy
+# mirrors public PyPI with identical /simple/ and /packages/<hash>/ paths, so a
+# pure URL swap to pypi.org / files.pythonhosted.org keeps hashes valid — no
 # re-resolution needed (which matters: the build host often can't reach public PyPI).
 # Gated on REWRITE_LOCK_TO_PUBLIC_PYPI=1 so internal-only deploys are unaffected.
 if [[ "${REWRITE_LOCK_TO_PUBLIC_PYPI:-}" == "1" ]]; then
     echo "  Rewriting uv.lock internal proxy URLs -> public PyPI"
-    perl -i -pe 's{https://pypi-proxy\.dev\.databricks\.com/simple/}{https://pypi.org/simple/}g; s{https://pypi-proxy\.dev\.databricks\.com/packages/}{https://files.pythonhosted.org/packages/}g' dist/uv-stage/uv.lock
-    if grep -q "pypi-proxy.dev.databricks.com" dist/uv-stage/uv.lock; then
-        echo "ERROR: uv.lock still references pypi-proxy after rewrite" >&2
-        grep -n "pypi-proxy.dev.databricks.com" dist/uv-stage/uv.lock | head >&2
+    perl -i -pe 's{https://pypi-proxy\.cloud\.databricks\.com/simple/}{https://pypi.org/simple/}g; s{https://pypi-proxy\.cloud\.databricks\.com/packages/}{https://files.pythonhosted.org/packages/}g' dist/uv-stage/uv.lock
+    # Defensive: fail loudly rather than ship a lock that still points at an
+    # internal proxy the app container can't reach.
+    if grep -qE "pypi-proxy\.(dev|cloud)\.databricks\.com" dist/uv-stage/uv.lock; then
+        echo "ERROR: uv.lock still references an internal proxy after rewrite" >&2
+        grep -nE "pypi-proxy\.(dev|cloud)\.databricks\.com" dist/uv-stage/uv.lock | head >&2
         exit 1
     fi
 fi
@@ -289,6 +335,49 @@ mkdir -p "$BUILD_DIR"
 cp "$WHEEL" "$BUILD_DIR/"
 cp dist/uv-stage/pyproject.toml "$BUILD_DIR/"
 cp dist/uv-stage/uv.lock "$BUILD_DIR/"
+
+# Zip each seed template folder into .build/initial_templates_zips/<slug>.zip.
+# These ship alongside the wheel (databricks.yml sync); the workspace auto-expands
+# each .zip on upload, so the deployed container gets already-unzipped folders that
+# the seeder walks (rglob manifest.json). Keeps the wheel ~5 MB smaller (under the
+# Apps 10 MB source-export cap).
+#
+# ONE ZIP PER *LEAF* TEMPLATE, not per top-level folder. A top-level dir that is a
+# CONTAINER of templates (has sub-folders with their own manifest.json but none of
+# its own — e.g. `training_template/<7 workshop demos>`) is zipped per sub-folder,
+# so each stays small. Zipping such a container as one blob produced a 6.4 MB file
+# that reproducibly 504'd the workspace-files import gateway (per-file streaming
+# limit); the individual demos are ~1-2 MB each and upload cleanly. Seed discovery
+# recurses, so N small zips == the same N templates as one big zip.
+if [[ -n "${TEMPLATES_STAGE:-}" && -d "$TEMPLATES_STAGE" ]]; then
+    ZIP_DIR="$BUILD_DIR/initial_templates_zips"
+    mkdir -p "$ZIP_DIR"
+    _zipped=0
+    # Emit one zip for the folder $2 (relative to stage root $1), preserving its
+    # path inside the zip so it expands back to <runtime>/<rel>/... .
+    _zip_template() {
+        local _stage="$1" _rel="$2"
+        local _name="${_rel//\//__}"   # nested rel path → flat, collision-free zip name
+        (cd "$_stage" && zip -q -r "$ZIP_DIR/$_name.zip" "$_rel")
+        _zipped=$((_zipped + 1))
+    }
+    for _tpl in "$TEMPLATES_STAGE"/*/; do
+        [[ -d "$_tpl" ]] || continue
+        _slug="$(basename "$_tpl")"
+        if [[ -f "$_tpl/manifest.json" ]]; then
+            # Leaf template (its own manifest) → one zip, as before.
+            _zip_template "$TEMPLATES_STAGE" "$_slug"
+        else
+            # Container of templates → one zip per sub-folder that has a manifest.
+            for _sub in "$_tpl"*/; do
+                [[ -d "$_sub" && -f "$_sub/manifest.json" ]] || continue
+                _zip_template "$TEMPLATES_STAGE" "$_slug/$(basename "$_sub")"
+            done
+        fi
+    done
+    echo "  Packaged $_zipped template zip(s) into $ZIP_DIR/"
+    rm -rf "$(dirname "$TEMPLATES_STAGE")"
+fi
 # Belt-and-braces: ensure no stale requirements.txt sneaks into the upload.
 # Apps prefers requirements.txt when present and would silently fall back to
 # pip + Python 3.11, defeating this whole step.
@@ -343,8 +432,27 @@ if [[ -n "$TARGET" ]]; then
     # Why a complex var (instead of `targets.<t>.env`)? `env` isn't a recognized
     # bundle target field; the CLI drops it from the resolved summary. A complex
     # var IS first-class, gets var substitution applied, and round-trips cleanly.
-    ENV_YAML=$(databricks bundle summary -t "$TARGET" --output json 2>/dev/null \
-        | jq -r '
+    # Profile: when invoked by `databricks bundle deploy -p <profile>`, the CLI
+    # exports DATABRICKS_CONFIG_PROFILE to this build subprocess. Pass it through
+    # explicitly so `bundle summary` resolves against the SAME workspace the
+    # deploy targets — NOT the developer's DEFAULT profile (which may point at a
+    # different workspace and yield an empty/wrong app_env, silently shipping an
+    # app.yml with no env block).
+    PROFILE_ARG=()
+    if [[ -n "${DATABRICKS_CONFIG_PROFILE:-}" ]]; then
+        PROFILE_ARG=(-p "$DATABRICKS_CONFIG_PROFILE")
+    fi
+    # Do NOT swallow errors here: a failed `bundle summary` must fail the build
+    # loudly rather than produce an empty env block. Capture stderr for the log.
+    # NOTE: expand PROFILE_ARG with the `${arr[@]+"${arr[@]}"}` guard — under
+    # `set -u` (set at the top), a bare `"${PROFILE_ARG[@]}"` on an EMPTY array
+    # raises "unbound variable" on bash 3.2 (macOS's stock /bin/bash), which
+    # would abort a local build run without DATABRICKS_CONFIG_PROFILE set.
+    SUMMARY_JSON=$(databricks bundle summary -t "$TARGET" ${PROFILE_ARG[@]+"${PROFILE_ARG[@]}"} --output json) || {
+        echo "ERROR: 'databricks bundle summary -t $TARGET ${PROFILE_ARG[*]-}' failed — cannot generate app.yml env." >&2
+        exit 1
+    }
+    ENV_YAML=$(printf '%s' "$SUMMARY_JSON" | jq -r '
             (.variables.app_env.value // {})
             | to_entries
             | map("  - name: \"\(.key)\"\n    value: \"\(.value)\"")
@@ -355,7 +463,8 @@ if [[ -n "$TARGET" ]]; then
         # Show what was injected (helps debug missing vars).
         echo "$ENV_YAML" | sed 's/^/    /'
     else
-        echo "  WARNING: variables.app_env was empty — did you set it in databricks.${TARGET}.yml?" >&2
+        echo "ERROR: variables.app_env resolved EMPTY for target '$TARGET' — refusing to ship an app.yml with no env block." >&2
+        exit 1
     fi
 fi
 

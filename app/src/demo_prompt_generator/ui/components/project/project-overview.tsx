@@ -36,6 +36,8 @@ import {
   Play,
   Maximize2,
   Check,
+  Database,
+  Lock,
 } from "lucide-react";
 import { ScrollArea } from "../ui/scroll-area";
 import { Button } from "../ui/button";
@@ -47,7 +49,8 @@ import {
   type CapabilityMeta,
 } from "@/lib/capabilities";
 import { estimateBuild, formatMinutes, formatElapsed, elapsedMinutes } from "@/lib/build-eta";
-import type { CapabilityBuildStatus, DeployedResourceLink, ProjectFile, Project } from "@/lib/custom-api";
+import type { CapabilityBuildStatus, DeployedResourceLink, ProjectFile, Project, WorkspaceInfo } from "@/lib/custom-api";
+import { getProjectFile, getWorkspaceInfo, ucExploreUrl } from "@/lib/custom-api";
 import { BrandCard } from "./brand-card";
 import { detectStageFromFiles, getLifecycleStages } from "./build-stepper";
 import { cn } from "@/lib/utils";
@@ -1267,6 +1270,155 @@ const PlatformValueProp = memo(function PlatformValueProp({
 // Main component
 // ===========================================================================
 
+// ---------------------------------------------------------------------------
+// Grounded-data card — shown when the demo is built READ-ONLY on the user's
+// real Unity Catalog tables (signalled by specifications/source-tables.md).
+// It flags "we're using YOUR data, not synthetic copies" and deep-links each
+// catalog + table straight into Catalog Explorer, so the project never
+// positions synthetic data when the user brought their own.
+// ---------------------------------------------------------------------------
+
+/** Pull the fully-qualified table names out of source-tables.md. Each table is
+ *  written as a `## \`catalog.schema.table\`` heading, so this is a stable,
+ *  format-owned parse (the backend authors that file — see
+ *  routes/projects.py::_build_source_tables_md). */
+function parseGroundingTables(md: string): string[] {
+  const out: string[] = [];
+  const re = /^##\s+`([^`]+)`/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(md)) !== null) {
+    const name = m[1].trim();
+    if (name.includes(".")) out.push(name); // catalog.schema[.table]
+  }
+  return out;
+}
+
+/** A Catalog Explorer chip — links out to the UC object when the workspace host
+ *  is known, otherwise renders as a plain (unlinked) label. */
+function UcChip({
+  label,
+  parts,
+  workspaceInfo,
+}: {
+  label: string;
+  parts: string[];
+  workspaceInfo: WorkspaceInfo | null;
+}) {
+  const fullName = parts.join(".");
+  const href = ucExploreUrl(workspaceInfo, parts);
+  const cls =
+    "inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-0.5 text-[11.5px] font-mono";
+  if (!href) return <span className={cls} title={fullName}>{label}</span>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className={cn(cls, "hover:bg-muted hover:border-border transition-colors")}
+      title={`Open ${fullName} in Catalog Explorer`}
+    >
+      {label}
+      <ExternalLink className="h-3 w-3 opacity-50" />
+    </a>
+  );
+}
+
+const GroundedDataCard = memo(function GroundedDataCard({
+  tables,
+  workspaceInfo,
+  allowsWrite = false,
+}: {
+  tables: string[];
+  workspaceInfo: WorkspaceInfo | null;
+  /** True when the user opted into letting the demo create its own auxiliary
+   *  data — the real tables below are still read-only. */
+  allowsWrite?: boolean;
+}) {
+  // Unique catalogs (for the summary sentence) and catalog.schema pairs (the
+  // linked "Schema" chips — schema is where the tables actually live, and the
+  // chip label carries the catalog prefix so multiple catalogs stay legible).
+  const catalogs = useMemo(
+    () => Array.from(new Set(tables.map((t) => t.split(".")[0]))),
+    [tables],
+  );
+  const schemas = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          tables
+            .map((t) => t.split("."))
+            .filter((p) => p.length >= 2)
+            .map((p) => `${p[0]}.${p[1]}`),
+        ),
+      ),
+    [tables],
+  );
+  return (
+    <section className="rounded-2xl border border-border/60 bg-card p-5">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <Database className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+              Your data
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/[0.08] px-2 py-0.5 text-[10.5px] font-semibold text-emerald-700 dark:text-emerald-300">
+              <Lock className="h-3 w-3" /> Read-only
+            </span>
+          </div>
+          <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/90">
+            Built directly on{" "}
+            <span className="font-semibold">{tables.length}</span>{" "}
+            {tables.length === 1 ? "table" : "tables"}
+            {catalogs.length > 1 ? ` across ${catalogs.length} catalogs` : ""} from
+            your existing Unity Catalog — queried in place. These tables are never
+            modified.{" "}
+            {allowsWrite
+              ? "The demo may add its own supporting data in a separate catalog."
+              : "No synthetic data was generated."}
+          </p>
+
+          {schemas.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <span className="mr-0.5 text-[11px] text-muted-foreground">
+                {schemas.length > 1 ? "Schemas:" : "Schema:"}
+              </span>
+              {schemas.map((s) => (
+                <UcChip
+                  key={s}
+                  label={s}
+                  parts={s.split(".")}
+                  workspaceInfo={workspaceInfo}
+                />
+              ))}
+            </div>
+          )}
+
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="mr-0.5 text-[11px] text-muted-foreground">Tables:</span>
+            {tables.map((t) => {
+              const parts = t.split(".");
+              // Table name only — the schema chips above carry the fuller path;
+              // the link + tooltip resolve the exact object.
+              const label = parts[parts.length - 1];
+              return (
+                <UcChip
+                  key={t}
+                  label={label}
+                  parts={parts}
+                  workspaceInfo={workspaceInfo}
+                />
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+});
+
 export interface ProjectOverviewProps {
   projectId: string;
   /** Full project — powers the brand card (company + brand.json). */
@@ -1340,6 +1492,52 @@ export const ProjectOverview = memo(function ProjectOverview({
 }: ProjectOverviewProps) {
   const buildable = capabilities?.buildable ?? [];
   const deployed = deployedResources ?? [];
+
+  // Grounded-on-real-data signal: specifications/source-tables.md is written at
+  // creation only when the user built on their own UC tables (read-only). Its
+  // presence flips the "Your data" card on; we parse the table list from it and
+  // resolve the workspace host so each name deep-links into Catalog Explorer.
+  const hasSourceTables = useMemo(
+    () => files.some((f) => f.path === "specifications/source-tables.md"),
+    [files],
+  );
+  const [groundingTables, setGroundingTables] = useState<string[]>([]);
+  const [groundingAllowsWrite, setGroundingAllowsWrite] = useState(false);
+  const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
+  useEffect(() => {
+    if (!hasSourceTables) {
+      setGroundingTables([]);
+      setGroundingAllowsWrite(false);
+      return;
+    }
+    let cancelled = false;
+    getProjectFile(projectId, "specifications/source-tables.md")
+      .then((f) => {
+        if (cancelled) return;
+        setGroundingTables(parseGroundingTables(f.content));
+        setGroundingAllowsWrite(/Data-write opt-in:\s*ENABLED/i.test(f.content));
+      })
+      .catch(() => {
+        if (!cancelled) setGroundingTables([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, hasSourceTables]);
+  useEffect(() => {
+    if (!hasSourceTables) return;
+    let cancelled = false;
+    getWorkspaceInfo()
+      .then((w) => {
+        if (!cancelled) setWorkspaceInfo(w);
+      })
+      .catch(() => {
+        /* host unknown → chips render unlinked */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasSourceTables]);
 
   // The demo is "built" once the backend settled its stage on BUILT/BUNDLED
   // (all resources ready AND a prior turn finished). Once built we never show
@@ -1434,6 +1632,17 @@ export const ProjectOverview = memo(function ProjectOverview({
           onRegenerateNarrative={onRegenerateNarrative}
           onOpenChat={onOpenChat}
         />
+
+        {/* "Your data" band — for demos grounded read-only on real UC tables.
+            Sits right under the pitch so the data foundation is front-and-center
+            and links straight into Catalog Explorer. */}
+        {groundingTables.length > 0 && (
+          <GroundedDataCard
+            tables={groundingTables}
+            workspaceInfo={workspaceInfo}
+            allowsWrite={groundingAllowsWrite}
+          />
+        )}
 
         {/* Fork "start here" band — the first, most obvious action on a freshly
             forked project: build it as-is, or tell the agent how to make this

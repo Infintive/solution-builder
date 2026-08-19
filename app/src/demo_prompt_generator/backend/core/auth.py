@@ -161,11 +161,44 @@ def whoami(headers: DatabricksAppsHeaders, session: Session) -> WhoAmI:
 # ---------------------------------------------------------------------------
 
 
+def _read_host_from_cfg(auth_file: Path) -> str | None:
+    """Read `host = ...` from a written .databrickscfg. Returns None if
+    unreadable / no host line."""
+    host, _, _ = _read_sp_creds_from_cfg(auth_file)
+    return host
+
+
+def _read_sp_creds_from_cfg(auth_file: Path) -> tuple[str | None, str | None, str | None]:
+    """Read (host, client_id, client_secret) from a deployer-SP .databrickscfg.
+
+    These must be re-injected as explicit env vars for target deploys — the
+    inherited Apps-runtime env (app SP creds + host) otherwise takes precedence
+    over the config file. Returns (None, None, None) fields it can't find."""
+    host = cid = secret = None
+    try:
+        for line in auth_file.read_text().splitlines():
+            s = line.strip()
+            key, sep, value = s.partition("=")
+            if not sep:
+                continue
+            key, value = key.strip(), value.strip()
+            if key == "host" and value:
+                host = value
+            elif key == "client_id" and value:
+                cid = value
+            elif key == "client_secret" and value:
+                secret = value
+    except OSError:
+        pass
+    return host, cid, secret
+
+
 def subprocess_auth_env(
     project_dir: Path,
     *,
     mode: Mode,
     local_profile: str | None = None,
+    target_deploy: bool = False,
 ) -> dict[str, str]:
     """Env overrides to pass to any Databricks-authenticated subprocess.
 
@@ -177,9 +210,52 @@ def subprocess_auth_env(
     Deployed mode: point at <project_dir>/.databrickscfg, which middleware
                    keeps fresh from x-forwarded-access-token on every
                    request. Profile name is fixed to DEFAULT.
+
+    `target_deploy=True` (Option A cross-workspace): the project's
+    .databrickscfg was written by `write_project_sp_auth_file` with the
+    deployer SP's OAuth-M2M creds pointed at a TARGET workspace. We must NOT
+    scrub DATABRICKS_CLIENT_ID/SECRET (that scrub exists to FORCE the OBO PAT
+    over the app-SP for same-workspace deploys) and must pin auth_type to
+    oauth-m2m so the SDK reads client_id/client_secret from the file. When
+    False the behavior is byte-for-byte the original OBO path.
     """
     if mode == "deployed":
         auth_file = project_dir / AUTH_FILE_NAME
+        if target_deploy:
+            # SP-target (Option A cross-workspace). The deployer SP's creds +
+            # the TARGET host must deploy into the target workspace.
+            #
+            # CRITICAL — why we inject creds as ENV, not just point at the cfg
+            # file: the Databricks Apps runtime sets DATABRICKS_HOST *and*
+            # DATABRICKS_CLIENT_ID/SECRET (the APP's own SP) in the parent env.
+            # The SDK/CLI auth precedence puts those inherited env vars ABOVE the
+            # `host`/creds in a DATABRICKS_CONFIG_FILE. So if we only set
+            # DATABRICKS_CONFIG_FILE, the subprocess authenticates as the APP SP
+            # against the HOST workspace — exactly the bug where demo resources
+            # landed in the host workspace owned by the app SP. We therefore read
+            # the deployer SP's host + client_id/secret back out of the cfg we
+            # just wrote and set them as explicit env vars, which unambiguously
+            # win, and blank DATABRICKS_TOKEN so a stray inherited PAT can't
+            # shadow the oauth-m2m creds.
+            host, cid, secret = _read_sp_creds_from_cfg(auth_file)
+            if not (host and cid and secret):
+                logger.error(
+                    "target_deploy: could not read SP host/creds from %s — "
+                    "refusing to fall through to the app SP / host workspace",
+                    auth_file,
+                )
+                # Fail closed: without a real target identity, better to write
+                # nothing than to silently deploy to the host as the app SP.
+                return {"DATABRICKS_CONFIG_FILE": str(auth_file)}
+            return {
+                "DATABRICKS_CONFIG_FILE": str(auth_file),
+                "DATABRICKS_CONFIG_PROFILE": AUTH_FILE_PROFILE,
+                "DATABRICKS_AUTH_TYPE": "oauth-m2m",
+                "DATABRICKS_HOST": host,
+                "DATABRICKS_CLIENT_ID": cid,
+                "DATABRICKS_CLIENT_SECRET": secret,
+                "DATABRICKS_TOKEN": "",
+            }
         # Scrub OAuth-M2M creds the Databricks Apps runtime sets in the parent
         # process. Without this, the subprocess inherits DATABRICKS_CLIENT_ID/
         # SECRET and the SDK auth chain picks oauth-m2m (the app SP) over the
@@ -248,6 +324,62 @@ def write_project_auth_file(project_dir: Path, host: str, token: str) -> Path:
             pass
         raise
     return target
+
+
+def target_deploy_active(config, target_workspace_host: str | None) -> bool:
+    """Is THIS project deploying cross-workspace? Delegates to the remote_deploy
+    module's predicate; returns False if that module is absent (generic Tier-1
+    build) so the whole app degrades to same-workspace OBO. Re-exported here so
+    existing callers can keep importing it from `core.auth`."""
+    try:
+        from ..remote_deploy.auth import target_deploy_active as _impl
+    except ImportError:
+        return False  # remote_deploy/ excluded → never cross-workspace.
+    return _impl(config, target_workspace_host)
+
+
+def write_project_databrickscfg(
+    project_dir: Path,
+    *,
+    config,
+    target_workspace_host: str | None,
+    user_pat: str | None,
+    user_host: str | None,
+) -> str | None:
+    """Write <project>/.databrickscfg with the right identity for this project,
+    and return the label of what was written ("sp-target" | "obo" | None).
+
+    - Cross-workspace (target set + deployer SP configured): OAuth-M2M creds
+      for the deployer SP pointed at the TARGET workspace host. This branch lives
+      in the OPTIONAL `remote_deploy/` module; imported under try/except so a
+      generic build without that module simply never takes it.
+    - Otherwise (classic): the user's OBO PAT pointed at the app's host workspace.
+
+    Callers pass whatever they have; this decides. Returns None (writes nothing)
+    if the required inputs for the chosen mode are missing, so callers can log.
+    """
+    try:
+        from ..remote_deploy.auth import (
+            target_deploy_active as _sp_active,
+            write_project_sp_auth_file,
+        )
+    except ImportError:
+        _sp_active = None  # remote_deploy/ excluded from this build.
+
+    if _sp_active is not None and _sp_active(config, target_workspace_host):
+        host = _normalize_host(target_workspace_host)  # type: ignore[arg-type]
+        write_project_sp_auth_file(
+            project_dir,
+            host=host,
+            client_id=config.deployer_sp_client_id,
+            client_secret=config.deployer_sp_client_secret,
+        )
+        return "sp-target"
+    # classic OBO
+    if user_pat and user_host:
+        write_project_auth_file(project_dir, user_host, user_pat)
+        return "obo"
+    return None
 
 
 def delete_project_auth_file(project_dir: Path) -> None:
@@ -356,7 +488,14 @@ def make_project_auth_refresher(
         if not is_driver(session, project_id, caller_email):
             return  # not the driver: don't thrash the current driver's token
         host = resolve_host(headers)
-        if not host:
+        # Cross-workspace (SP-target) mode doesn't need the user host/PAT for the
+        # file itself, but a resolvable host is still cheap context; only bail on
+        # missing host in the classic OBO path.
+        from ..models import Project
+        project = session.get(Project, project_id)
+        target_host = project.target_workspace_host if project else None
+        sp_target = target_deploy_active(config, target_host)
+        if not sp_target and not host:
             logger.warning(
                 "deployed mode + PAT present but no host resolvable — "
                 "skipping .databrickscfg refresh for project %s",
@@ -373,7 +512,15 @@ def make_project_auth_refresher(
                 return
             _auth_refresh_last[key] = now
         try:
-            write_project_auth_file(get_project_dir(project_id), host, pat)
+            wrote = write_project_databrickscfg(
+                get_project_dir(project_id),
+                config=config,
+                target_workspace_host=target_host,
+                user_pat=pat,
+                user_host=host,
+            )
+            if wrote is None:
+                return
             # Stamp the driver token-freshness clock so non-drivers know the
             # token is current (the driver just refreshed it via preview).
             from ..routes.projects import claim_driver
@@ -400,6 +547,9 @@ __all__ = [
     "request_user_pat",
     "resolve_host",
     "subprocess_auth_env",
+    "target_deploy_active",
     "whoami",
     "write_project_auth_file",
+    "write_project_databrickscfg",
+    "write_project_sp_auth_file",
 ]

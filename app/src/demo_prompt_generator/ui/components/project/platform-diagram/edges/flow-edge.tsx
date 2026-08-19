@@ -3,7 +3,7 @@
  * side/port-aware routing + fan-out, draggable endpoints + vertical elbow,
  * mid-line label, and the animated "data flowing" overlay.
  */
-import { memo, useState, useContext } from "react";
+import { memo, useState, useContext, useEffect } from "react";
 import {
   useInternalNode,
   useStore,
@@ -215,6 +215,24 @@ const FlowEdge = memo(function FlowEdge(props: EdgeProps) {
     setDrag(null);
   };
 
+  // Escape while dragging an endpoint CANCELS the reposition — drop the drag +
+  // clear the drop-target WITHOUT retargeting, so the edge keeps its original
+  // endpoint (the subsequent pointerup is a no-op since `end` guards on `drag`).
+  useEffect(() => {
+    if (!drag) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      ops?.setDropTarget(null);
+      setDrag(null);
+    };
+    // Capture phase so we cancel before any other Escape handler (e.g. the canvas
+    // clearing selection) reacts.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [drag, ops]);
+
   // Endpoint grab-dots — only shown when the edge is SELECTED/dragging (below),
   // so they're always full-size + bright. Drag one to reconnect that end.
   const dotProps = {
@@ -292,8 +310,8 @@ const FlowEdge = memo(function FlowEdge(props: EdgeProps) {
   //   • any other edge FROM a data source → `laser` — a bright ingest beam.
   //   • a non-source origin → a plain `dot`.
   const targetHandle = props.targetHandleId ?? undefined;
-  const sData = sNode?.data as { sourceKey?: string; component?: { icon?: string } } | undefined;
-  const isSource = !!sData?.sourceKey || source.startsWith("src-");
+  const sData = sNode?.data as { type?: string; sourceKey?: string; component?: { icon?: string } } | undefined;
+  const isSource = sData?.type === "source" || !!sData?.sourceKey || source.startsWith("src-");
   // Base ids (strip a `#N` duplicate suffix) — computed once, reused below.
   const srcBase = source.replace(/#\d+$/, "");
   const tgtBase = target.replace(/#\d+$/, "");

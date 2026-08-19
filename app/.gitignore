@@ -22,7 +22,7 @@ src/demo_prompt_generator/_metadata.py
 # (cleaned up by the build's EXIT trap; gitignored as a safety net).
 src/demo_prompt_generator/.claude/
 src/demo_prompt_generator/initial_templates/
-src/demo_prompt_generator/ai_dev_kit/
+src/demo_prompt_generator/databricks_agent_skill/
 
 # build files
 dist
@@ -54,6 +54,10 @@ databricks.*.yml
 !databricks.prod.yml
 !databricks.staging.yml
 !databricks.prod-fevm.yml
+# `prod-xws` is a personal dev/test instance name — keep it out of the repo
+# entirely (even its example). Deploy it locally; nothing xws-named is committed.
+databricks.prod-xws.yml
+databricks.prod-xws.yml.example
 
 # Legacy dev tooling
 .apx/
@@ -68,7 +72,7 @@ databricks.*.yml
 projects/
 
 # Cloned ai-dev-kit repository
-ai_dev_kit/
+databricks_agent_skill/
 
 # Electron build artifacts
 dist-electron/

@@ -392,6 +392,9 @@ class FileSyncService:
             return 0
 
         synced = 0
+        # Track a changed architecture.md so we can record a history snapshot
+        # AFTER the sync commits (its own debounced commit; kept out of this loop).
+        arch_md_changed: Optional[str] = None
 
         with Session(self.engine) as session:
             for rel_path in relative_paths:
@@ -412,6 +415,9 @@ class FileSyncService:
 
                         if existing and existing.content_hash == content_hash:
                             continue
+
+                        if Path(rel_path).name == "architecture.md":
+                            arch_md_changed = content.decode("utf-8", errors="replace")
 
                         compressed = compress_content(content)
                         mtime = datetime.fromtimestamp(
@@ -452,6 +458,18 @@ class FileSyncService:
                         synced += 1
 
             session.commit()
+
+            # architecture.md changed on disk (agent write, or an external edit) →
+            # record a versioned history snapshot (5-min debounced). Same single
+            # entry point the save route uses, so the debounce is consistent. Runs
+            # only past the cleaning/folder guard above, so we never write history
+            # for a project mid-teardown. Best-effort.
+            if arch_md_changed is not None:
+                try:
+                    from .architecture_history import record_architecture_history
+                    record_architecture_history(session, project_id, arch_md_changed)
+                except Exception:
+                    logger.warning("architecture-history snapshot failed (watcher sync)", exc_info=True)
 
         return synced
 

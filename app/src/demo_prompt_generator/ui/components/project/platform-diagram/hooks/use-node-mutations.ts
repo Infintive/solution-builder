@@ -64,6 +64,33 @@ export function useNodeMutations(): NodeMutations {
   // as RF set it.
   const onResize = useCallback((id: string, w: number, h: number, scale?: number, center?: { x: number; y: number }) => {
     setNodesRef.current?.((nds) => {
+      // RF node positions are TOP-LEFT; width/height are the on-canvas footprint.
+      // The resized box's new rect (position may shift when a pinned edge is kept).
+      const box = nds.find((n) => n.id === id);
+      const boxDd = box?.data as NodeData | undefined;
+      const boxPos = center ?? box?.position;
+      const wrapList = boxDd?.placement?.wraps;
+      // A wrapping box that shrank may now EXCLUDE some children → drop those from
+      // its `wraps` so it stops trying to contain them (dynamic, on every resize).
+      // "Outside" = the child's CENTER falls outside the box's new rect (forgiving
+      // of borders + partial overlap). Only prunes; never adds.
+      let keptWraps: string[] | undefined;
+      if (wrapList?.length && boxPos) {
+        const bx = boxPos.x, by = boxPos.y;
+        const inside = (n: Node): boolean => {
+          const cw = (n.width ?? (n.data as NodeData)?.w ?? 0);
+          const ch = (n.height ?? (n.data as NodeData)?.h ?? 0);
+          const cx = n.position.x + cw / 2;
+          const cy = n.position.y + ch / 2;
+          return cx >= bx && cx <= bx + w && cy >= by && cy <= by + h;
+        };
+        const kept = wrapList.filter((cid) => {
+          const child = nds.find((n) => n.id === cid);
+          return !child || inside(child); // keep if still inside (or not on canvas)
+        });
+        if (kept.length !== wrapList.length) keptWraps = kept;
+      }
+
       const next = nds.map((n) => {
         if (n.id !== id) return n;
         const dd = n.data as NodeData;
@@ -71,13 +98,22 @@ export function useNodeMutations(): NodeMutations {
         const swapped = q === 90 || q === 270;
         const cardW = swapped ? h : w;
         const cardH = swapped ? w : h;
+        const placement = keptWraps
+          ? { ...dd.placement, wraps: keptWraps }
+          : dd.placement;
         return {
           ...n,
           width: w,
           height: h,
           ...(center ? { position: { x: center.x, y: center.y } } : {}),
           style: { ...n.style, width: w, height: h },
-          data: { ...dd, w: Math.round(cardW), h: Math.round(cardH), ...(scale !== undefined ? { scale } : {}) },
+          data: {
+            ...dd,
+            w: Math.round(cardW),
+            h: Math.round(cardH),
+            ...(scale !== undefined ? { scale } : {}),
+            ...(keptWraps ? { placement } : {}),
+          },
         };
       });
       scheduleSaveRef.current?.(next, edgesRef.current);
@@ -112,7 +148,7 @@ export function useNodeMutations(): NodeMutations {
         if (dd.annotation) {
           return { ...n, data: { ...dd, annotation: { ...dd.annotation, desc } } };
         }
-        const isSrc = !!dd.sourceKey || baseId(id).startsWith("src-");
+        const isSrc = dd.type === "source" || !!dd.sourceKey || baseId(id).startsWith("src-");
         return isSrc
           ? { ...n, data: { ...dd, desc } }
           : { ...n, data: { ...dd, component: { ...dd.component, desc } } };

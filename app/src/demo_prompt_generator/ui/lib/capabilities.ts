@@ -37,7 +37,7 @@ export interface CapabilityMeta {
 
 export const CAPABILITY_META: Record<string, CapabilityMeta> = {
   // ── Data Ingestion ────────────────────────────────────────────────
-  "synthetic-data-gen": { group: "Data Ingestion", display: "Synthetic Data", icon: "lakeflowConnect" },
+  "synthetic-data-gen": { group: "Data Ingestion", display: "Synthetic Data", icon: "lakeflowConnect", deployed_type: "catalog_explorer" },
   "lakeflow-connect":   { group: "Data Ingestion", display: "Lakeflow Connect", icon: "lakeflowConnect" },
   "lakeflow-designer":  { group: "Data Ingestion", display: "Lakeflow Designer", icon: "sdpPipeline" },
   "sdp":                { group: "Data Ingestion", display: "Spark Declarative Pipelines", icon: "sdpPipeline", deployed_type: "pipeline" },

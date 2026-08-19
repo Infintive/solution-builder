@@ -90,8 +90,8 @@ import {
   type DeployedResources,
   type ReasoningEntry,
 } from "@/lib/custom-api";
-import { AUTO_BUILD_KICKOFF, ARCHITECTURE_MIGRATION_PROMPT } from "@/lib/auto-build-prompt";
-import { isLegacyArchitectureFormat } from "@/lib/platform-architecture";
+import { AUTO_BUILD_KICKOFF, ARCHITECTURE_MIGRATION_PROMPT, buildArchitectureFixPrompt } from "@/lib/auto-build-prompt";
+import { isLegacyArchitectureFormat, validateArchitecture, type ArchitectureIssue } from "@/lib/platform-architecture";
 import { captureDiagramPngDataUrl } from "@/components/project/platform-diagram/export-image";
 import { cn, isTemplateEligible } from "@/lib/utils";
 
@@ -225,10 +225,23 @@ function ProjectPage() {
   // calls `navigate({ search })` which pushes a new browser history
   // entry, so the back/forward arrows walk through tab history.
   const { tab: tabFromUrl, archTab: archTabFromUrl } = Route.useSearch();
+  // Deep-link intent, captured ONCE at mount: a shared link carrying `?archTab=`
+  // but no `?tab=` should OPEN on the Architecture tab. This must be a one-shot —
+  // if we let "?archTab= present → architecture" win on every render, then once
+  // the user has visited Architecture (which writes ?archTab=), clicking Overview
+  // clears ?tab= but leaves ?archTab=, so the tab snaps straight back to
+  // Architecture and Overview appears "dead". Freezing the intent at mount lets
+  // later navigation (an explicit tab, or its absence = overview) win. useRef
+  // initializer runs on the first render only.
+  const openedFromArchDeepLink = useRef(tabFromUrl == null && archTabFromUrl != null);
   // NOTE: `activeTab` is derived AFTER the project state below — an
   // architecture-first project defaults to the Architecture tab.
   const setActiveTab = useCallback(
     (next: ProjectTab) => {
+      // The user has actively chosen a tab → the mount deep-link intent is spent
+      // (so a later Overview click, which leaves ?archTab= in the URL, isn't
+      // overridden back to Architecture).
+      openedFromArchDeepLink.current = false;
       // Drop the `tab` key entirely when picking the default so URLs
       // stay clean for the most common landing state. Pinning `to` makes
       // TanStack pick this route's typed search schema instead of the
@@ -312,10 +325,11 @@ function ProjectPage() {
     ? (tabFromUrl === "architecture" || tabFromUrl === "app" || tabFromUrl === "files"
         ? tabFromUrl
         : "architecture")
-    // A link carrying `?archTab=` (a shared architecture deep link) implies the
-    // Architecture tab even if `?tab=` is absent — so the diagram (and its live
-    // collab room) mounts on open. Otherwise fall back to the URL tab / overview.
-    : (tabFromUrl ?? (archTabFromUrl ? "architecture" : "overview"));
+    // An explicit `?tab=` always wins. With NO `?tab=`, open on Architecture ONLY
+    // for the one-shot deep-link case (a shared `?archTab=` link opened fresh) —
+    // NOT whenever `?archTab=` merely lingers in the URL, or the user could never
+    // navigate back to Overview (clicking it clears `?tab=` but leaves `?archTab=`).
+    : (tabFromUrl ?? (openedFromArchDeepLink.current ? "architecture" : "overview"));
   const [projectNotFound, setProjectNotFound] = useState(false);
   const [files, setFiles] = useState<ProjectFile[]>([]);
   // True once the initial file list has loaded — guards the architecture
@@ -1635,6 +1649,33 @@ function ProjectPage() {
     handleSendMessage(ARCHITECTURE_MIGRATION_PROMPT);
   }, [architectureContent, projectId, isStreaming, handleSendMessage]);
 
+  // Architecture integrity → ask the agent to fix. The diagram validator flags
+  // broken references (dangling ids / edges / handles) that render incorrectly;
+  // the agent is the fixer. Two entry points share one sender:
+  //  • the issues badge's "Ask the assistant to fix" button (explicit), and
+  //  • an auto-send when a SAVE lands with issues (so an agent-authored or
+  //    hand-edited diagram that broke gets repaired without the user noticing
+  //    the badge). Guarded by a signature of the issue set so we send once per
+  //    distinct problem set (not on every keystroke/refetch), and never while a
+  //    turn is streaming (would stomp the run).
+  const lastFixSentSigRef = useRef<string | null>(null);
+  const issueSignature = (issues: ArchitectureIssue[]) =>
+    issues.map((i) => `${i.tab}|${i.nodeId ?? i.edgeId ?? ""}|${i.field ?? ""}|${i.message}`).sort().join("\n");
+  const sendArchitectureFix = useCallback((issues: ArchitectureIssue[]) => {
+    const prompt = buildArchitectureFixPrompt(issues);
+    if (!prompt) return;
+    lastFixSentSigRef.current = issueSignature(issues);
+    handleSendMessage(prompt);
+  }, [handleSendMessage]);
+  useEffect(() => {
+    if (!architectureContent || isStreaming) return;
+    const issues = validateArchitecture(architectureContent);
+    if (issues.length === 0) { lastFixSentSigRef.current = null; return; }
+    const sig = issueSignature(issues);
+    if (sig === lastFixSentSigRef.current) return; // already asked for this exact set
+    sendArchitectureFix(issues);
+  }, [architectureContent, isStreaming, sendArchitectureFix]);
+
   // Handle creating architecture - send message to agent.
   // NO-OP for architecture-first projects: their creation prompt (sent at
   // project creation) already tells the agent to draw architecture.md, and on
@@ -2496,6 +2537,7 @@ function ProjectPage() {
             onArchitectureDirty={markArchitectureDirty}
             initialArchTab={archTabFromUrl}
             onArchTabChange={setArchTab}
+            onRequestArchitectureFix={sendArchitectureFix}
             defaultLogosOn={defaultLogosOn}
             onShareLive={() => setShareOpen(true)}
             architectureFirst={!!project?.architecture_first}

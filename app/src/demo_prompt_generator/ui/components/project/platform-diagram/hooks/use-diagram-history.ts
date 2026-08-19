@@ -35,8 +35,14 @@ export interface DiagramHistory {
   beginBurst: () => void;
   /** The final state becomes the new baseline (what a subsequent edit pushes). */
   endBurst: (nds: Node[], eds: Edge[]) => void;
-  /** Clear history; the next populated render re-seeds the baseline. */
+  /** Clear history; the next populated render re-seeds the baseline. Use for a
+   *  genuine NEW document (fresh open, agent takeover, restore, structural load). */
   resetHistory: () => void;
+  /** Re-point the baseline to `(nds, eds)` WITHOUT clearing past/future. Use when
+   *  the graph was reseeded but it's the SAME logical document (e.g. a save
+   *  round-trip that only re-laid-out relative siblings) — so the user's undo/redo
+   *  stack survives instead of being wiped. */
+  rebaseHistory: (nds: Node[], eds: Edge[]) => void;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -93,6 +99,13 @@ export function useDiagramHistory({
     past.current = [];
     future.current = [];
     lastCommitted.current = null; // re-seeded by the baseline effect
+    setHistTick((t) => t + 1);
+  }, []);
+
+  // Re-point the baseline without touching past/future — the undo/redo stack
+  // survives a same-document reseed (see interface note).
+  const rebaseHistory = useCallback((nds: Node[], eds: Edge[]) => {
+    lastCommitted.current = cloneSnap(nds, eds);
     setHistTick((t) => t + 1);
   }, []);
 
@@ -160,5 +173,5 @@ export function useDiagramHistory({
     return () => window.removeEventListener("keydown", onKey);
   }, [undo, redo]);
 
-  return { beginBurst, endBurst, resetHistory, undo, redo, canUndo, canRedo, setScheduleSave };
+  return { beginBurst, endBurst, resetHistory, rebaseHistory, undo, redo, canUndo, canRedo, setScheduleSave };
 }

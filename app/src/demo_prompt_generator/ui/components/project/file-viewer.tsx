@@ -10,6 +10,7 @@ import { ProjectOverview } from "./project-overview";
 import { Skeleton } from "../ui/skeleton";
 import { ChevronRight, ChevronDown, ChevronLeft, Folder, FolderOpen, FileText, FileCode, Braces, Settings, File, Sparkles, RefreshCw, Network, BookOpen, Database, Eye, EyeOff, Code, Globe, Loader2, Server } from "lucide-react";
 import type { StoryAdaptMode } from "./story-adapt-dialog";
+import type { ArchitectureIssue } from "@/lib/platform-architecture";
 import { UnityCatalogIcon } from "../databricks-icons";
 import { Button } from "../ui/button";
 import type { CapabilityBuildStatus, ProjectFile, ProjectFileContent, DeployedResourceLink, Project } from "../../lib/custom-api";
@@ -112,6 +113,8 @@ interface FileViewerProps {
   defaultLogosOn?: boolean;
   /** Opens the Share dialog from the canvas "Share live with others" button. */
   onShareLive?: () => void;
+  /** Ask the chat agent to fix the diagram's validation issues. */
+  onRequestArchitectureFix?: (issues: ArchitectureIssue[]) => void;
   /** Architecture-first project awaiting its build: hide Overview + Story
    *  tabs and default the workspace to the Architecture tab. */
   architectureFirst?: boolean;
@@ -230,6 +233,7 @@ interface ArchitectureViewProps {
   onArchTabChange?: (name: string) => void;
   defaultLogosOn?: boolean;
   onShareLive?: () => void;
+  onRequestArchitectureFix?: (issues: ArchitectureIssue[]) => void;
 }
 
 const ArchitectureView = memo(function ArchitectureView({
@@ -246,6 +250,7 @@ const ArchitectureView = memo(function ArchitectureView({
   onArchTabChange,
   defaultLogosOn,
   onShareLive,
+  onRequestArchitectureFix,
 }: ArchitectureViewProps) {
   if (isCreatingArchitecture) {
     return (
@@ -297,6 +302,7 @@ const ArchitectureView = memo(function ArchitectureView({
               // hook self-disables when solo/offline, so this is safe always-on.
               enableCollab
               onShareLive={onShareLive}
+              onRequestArchitectureFix={onRequestArchitectureFix}
             />
           </Suspense>
           {/* Reload spinner: the agent rewrote architecture.md and we're
@@ -600,8 +606,10 @@ const ExpandedSidebar = memo(function ExpandedSidebar({
 
       {/* Workspace section — catalog/schema/warehouse defaults. Tucked at
           the top of the Files sidebar (advanced view) since this is
-          technical context AEs/SAs check when debugging deployments. */}
-      {(hasUC || hasWarehouse) && (
+          technical context AEs/SAs check when debugging deployments.
+          (The cross-workspace deploy TARGET is a per-account setting on the
+          home page — not shown here.) */}
+      {onResourcesClick && (hasUC || hasWarehouse) && (
         <div className="px-2.5 py-2 border-b border-border space-y-1.5">
           <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground/70 px-1">
             Workspace resources
@@ -862,6 +870,7 @@ export const FileViewer = memo(function FileViewer({
   onArchTabChange,
   defaultLogosOn,
   onShareLive,
+  onRequestArchitectureFix,
   architectureFirst = false,
   isStreaming = false,
   resources,
@@ -1052,6 +1061,7 @@ export const FileViewer = memo(function FileViewer({
               onArchTabChange={onArchTabChange}
               defaultLogosOn={defaultLogosOn}
               onShareLive={onShareLive}
+              onRequestArchitectureFix={onRequestArchitectureFix}
             />
           ) : activeTab === "app" ? (
             <AppPreviewTab

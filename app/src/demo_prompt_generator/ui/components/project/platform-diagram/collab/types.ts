@@ -1,7 +1,7 @@
 /** The slice of the collab session the Canvas needs — kept as a tiny interface
  *  so canvas.tsx doesn't depend on the WS hook directly (PlatformDiagram owns
  *  the hook and passes this down). */
-import type { CollabMember } from "./use-collab";
+import type { CollabMember } from "./use-collab-yjs";
 
 export interface CanvasCollab {
   /** Peers (excluding me) render as live cursors; the roster drives presence. */

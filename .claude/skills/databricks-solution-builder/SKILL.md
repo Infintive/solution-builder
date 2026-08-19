@@ -22,6 +22,7 @@ The main loop lives in this file (SKILL.md) — it describes **the flow**: stage
 | **2. Write Specs** | Write `01-lakeflow.md`, then the other top-level specs, then the app spec (if app needed), coherence review | ✅ *"Ready to build?"* | `stages/02-write-specs.md` |
 | **3. Build** — *pick ONE fork (by mode):* | | | |
 | &nbsp;&nbsp;↳ **3.1 Build resources** *(default)* | Provision the Databricks resources via Databricks Agent Skills (DAS) | — (build completes) | `stages/03.1-build.md` |
+| &nbsp;&nbsp;↳ **3.1r Build on real tables** *(grounded / "use existing data")* | Build DIRECTLY on the user's real UC tables, **READ-ONLY** — no data generation | — (build completes) | `stages/03.1r-build-on-real.md` |
 | &nbsp;&nbsp;↳ **3.2 Build a workshop** *(workshop mode)* | Instead of provisioning, generate a notebook workshop (build-it-live via Genie Code) | — (package ready) | `stages/03.2-workshop.md` |
 | **4. Package as a DAB** (opt) | On user request only, post-build | — | `references/dab/dab.md` |
 
@@ -33,6 +34,13 @@ The main loop lives in this file (SKILL.md) — it describes **the flow**: stage
 The opening message tells you which of three flows the user started (from the home page's tabs). The stages above are the **default**; two variants change where the run starts or how Build forks.
 
 **A — Build the resources (default).** Run stages 0→3.1: design the story, write specs, then **provision the real Databricks resources** (`stages/03.1-build.md`). Deployable demo; DAB optional only if the user asks at the end.
+
+> **"Use existing data" variant (build READ-ONLY on the user's real UC tables).** If the opening message says the user picked existing tables (and **`PROJECT/specifications/source-tables.md` exists**), that file holds the selected real tables' **fully-qualified names + schema (column names, types, comments)** — schema only. **Read it FIRST.** You **profile the tables yourself** at build time (read-only, off a warehouse) to get distinct counts / ranges / top values and derive the data capability signals (time columns, measures, dimensions, cross-table join keys) — see `references/grounding-table-stats.md`. If **`PROJECT/specifications/data-discovery.md`** also exists, **read it too** — it records what the user learned exploring these tables during data discovery: the use case they **already chose** (with its data-fit rationale), the alternatives they set aside, and the capability reasoning. Treat that use case as **AGREED SCOPE** — build it; do NOT re-pitch it, swap it for another idea, or contradict the fit findings. The demo is built **DIRECTLY on those real tables, READ-ONLY** — you query them **in place**; you do **NOT** generate synthetic data, do **NOT** copy or re-create them in another catalog, and you **NEVER** write to, alter, or drop them. Then:
+> - Derive **ONE** coherent **read-only analytics** use case that the real data actually supports. If `data-discovery.md` records a chosen use case, **that IS the one** — build it (don't re-derive a different one); the opening message may also include the user's own text and/or a story they picked — honor it. Ground it in the real column names / distributions in `source-tables.md`; do NOT invent a catalyst or columns the data doesn't have.
+> - Point **every** component (dashboards, Genie space, metric views, read-only AI functions) at the exact `catalog.schema.table` names from `source-tables.md`. The default capability set is read-only analytics — no ingest/SDP, no write-back app, no Lakebase, no ML training.
+> - **Build forks to 3.1r:** do NOT run `stages/03.1-build.md`; run **`stages/03.1r-build-on-real.md`** (verify the real tables are readable, then build the read-only components on them).
+>
+> **Data-write opt-in.** If — and only if — the opening message / `source-tables.md` header says the user opted into letting the demo add its own supporting data, you MAY generate **auxiliary** tables into the demo's **OWN** catalog/schema (clearly separated) so write-needing capabilities work. **Even then, the user's real tables above remain strictly READ-ONLY — never written to.** Absent that opt-in, create no tables at all.
 
 **B — Build a workshop** The SAME demo, delivered as prompts instead of resources: you generate a **package of clean notebooks whose cells are Genie Code prompts** that an SA (or customer) pastes into the Databricks Genie Assistant to build the demo **live, step by step** — raw data (Volume) → SDP → dashboard → Genie space.
 - **Stages 0–2 UNCHANGED** — story, `resources.json` + `README.md`, specs, as normal. (Capabilities are pre-scoped to workshop-ready ones — no ML/app/KA/MAS in V1.)
@@ -136,6 +144,7 @@ You must keep this exact naming convention.
 ```
 
 Notes on the trickier keys:
+- **Multiple resources of the same type (e.g. a 2nd dashboard added when iterating).** Add another key that ENDS IN THE SAME CANONICAL SUFFIX with a descriptive prefix — e.g. a second dashboard is `labor_economics_dashboard_id` (NOT `dashboard_2` or `second_dashboard`), a second Genie space is `pipeline_health_genie_space_id`, a second job is `recovery_job_id`. The suffix (`_dashboard_id`, `_genie_space_id`, `_job_id`, …) is what the UI link-builder AND the cross-workspace ownership reconcile match on — a key that doesn't end in the canonical suffix is invisible to both, so the resource gets no link/tile and is NEVER re-homed to you (it stays owned by the deployer SP). This is essential on ITERATE turns: when you add a resource to an already-built demo, record it with a suffix-matching key so it's granted to the triggering user like everything else.
 - **`mlflow_experiment_path`** — required when the demo trains an ML model. Full workspace path passed to `mlflow.set_experiment(...)`. Without it the MLflow Experiment tile never appears in the resources grid (the UI resolves the path → numeric experiment_id via the SDK).
 - **`app` is nested** (`app.name`, `app.id`, `app.deployment_note`). **Record `app.name` as soon as the app's initial setup is done (scaffold + config) — do NOT wait for deploy.** `app.name` alone marks the app capability "built" in the UI, so a preview-only app that never deploys still counts as complete. Add `app.id`/`app.url` later, only after `databricks apps deploy`. If the deploy fails or is intentionally skipped, keep `app.name` and put the explanation in `deployment_note`.
 - **Lakebase keys are three flat fields**, not nested. See `app.md` for `lakebase_setup_db.sh` which prints them.
@@ -227,6 +236,12 @@ To personalize a demo to a **real company**, if the user gives you one, search t
 ---
 
 ## Stage 0 — Capture Intent
+
+**Before assessing anything, check for a captured brief.** If `context/source-brief.md` exists (the user pasted a substantial spec on the home page) OR there are files under `context/uploads/`, **read them in full first** — that content is the authoritative statement of intent, higher-fidelity than any summary you'd write. When a real brief is present:
+
+- **Treat it as "Detailed"** (below) unless it's genuinely thin — the user has already done the thinking; don't re-ideate or propose alternatives.
+- **Lossless intake is the rule.** Preserve the brief's specifics — named entities, personas, metrics, numbers, data sources, requirements, and phrasing — through every stage. Your job is to *realize* the spec, not to compress it into a tidier story. A long, careful spec must produce a correspondingly rich demo; if you find yourself dropping details to fit the README template, the template yields, not the spec.
+- **`context/source-brief.md` stays the source of truth.** The `README.md` you write in Stage 1 is a *derived* artifact (a presenter's summary), not a replacement for the brief. At every later stage, if the README and the brief disagree or the README is thinner, **re-read `context/source-brief.md`** and defer to it. Never let your own summary become the thing you build from.
 
 First, assess the user's input — how much is already decided?
 

@@ -19,23 +19,24 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Configuration
-# The Databricks Agent Skills (DAS) repo is cloned by:
-#   - dev.sh (clones into ./ai_dev_kit/ for editable dev)
-#   - scripts/build.sh (clones into the wheel under demo_prompt_generator/ai_dev_kit/)
-# (The clone dir is still named `ai_dev_kit/` for path stability; its CONTENTS are
-# now github.com/databricks/databricks-agent-skills.) Resolution order (first hit
-# wins): explicit AI_DEV_KIT_PATH env var, wheel-bundled path inside the installed
-# package, then ./ai_dev_kit/ relative to cwd (dev.sh setup).
-def _resolve_ai_dev_kit_local() -> str:
-    explicit = os.getenv("AI_DEV_KIT_PATH")
+# The Databricks Agent Skills (DAS) repo (github.com/databricks/databricks-agent-skills)
+# is cloned into `databricks_agent_skill/` by:
+#   - dev.sh (clones into ./databricks_agent_skill/ for editable dev)
+#   - scripts/build.sh (clones into the wheel under
+#     demo_prompt_generator/databricks_agent_skill/, pruned to skills/ + experimental/)
+# Resolution order (first hit wins): explicit DATABRICKS_AGENT_SKILL_PATH env var,
+# wheel-bundled path inside the installed package, then ./databricks_agent_skill/
+# relative to cwd (dev.sh setup).
+def _resolve_databricks_agent_skill_local() -> str:
+    explicit = os.getenv("DATABRICKS_AGENT_SKILL_PATH")
     if explicit:
         return explicit
-    bundled = Path(__file__).parent.parent.parent / "ai_dev_kit"
+    bundled = Path(__file__).parent.parent.parent / "databricks_agent_skill"
     if bundled.exists():
         return str(bundled)
-    return "./ai_dev_kit"
+    return "./databricks_agent_skill"
 
-AI_DEV_KIT_LOCAL = _resolve_ai_dev_kit_local()
+DATABRICKS_AGENT_SKILL_LOCAL = _resolve_databricks_agent_skill_local()
 PROJECTS_BASE_DIR = os.getenv("PROJECTS_BASE_DIR", "./projects")
 
 # Skill dirs from the DAS repo that we never copy into a project.
@@ -67,7 +68,7 @@ def _iter_source_skill_dirs() -> list[Path]:
       - `experimental/databricks-genie` — the one experimental skill we ship.
     Returns the source dirs (excluded names + non-dirs filtered out here);
     callers still check for a SKILL.md. Missing roots are skipped silently."""
-    root = Path(AI_DEV_KIT_LOCAL)
+    root = Path(DATABRICKS_AGENT_SKILL_LOCAL)
     dirs: list[Path] = []
     skills_dir = root / "skills"
     if skills_dir.exists():

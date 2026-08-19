@@ -157,7 +157,7 @@ print(f"SPIKE_PEAK:   {SPIKE_PEAK.date()}")
 try:
     spark  # noqa: F821
 except NameError:
-    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    spark = DatabricksSession.builder.profile(os.environ.get("DATABRICKS_CONFIG_PROFILE", "DEFAULT")).serverless(True).getOrCreate()
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
 # The Volume is the workshop's raw landing zone — create it before writing.
 spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.{RAW_VOL}")

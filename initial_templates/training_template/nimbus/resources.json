@@ -1,0 +1,25 @@
+{
+  "short_description": "Nimbus — a mobile-first marketplace's conversion-slide-and-feature-velocity rescue. A checkout-flow change landing unevenly across platforms pushed a cluster of user segments into a conversion slide, faster than the analytical event data could surface to the product. A growth app reads governed cohort data at low latency, a recommendation ranks the feature to ship next (ship a proven variant / ship an alternative / roll out an existing flag) per sliding segment, and a PM approves — writing the decision back to Lakebase for the product to read at low latency (scale-to-zero for near-zero idle cost), with the assistant's AI spend capped against margin.",
+  "capabilities": {
+    "buildable": [
+      "synthetic-data-gen",
+      "sdp",
+      "metric-views",
+      "aibi-dashboards",
+      "genie",
+      "databricks-apps",
+      "lakebase"
+    ],
+    "optional": [
+      "ml-training-serving"
+    ],
+    "talking_track": [
+      "lakeflow-connect",
+      "unity-catalog",
+      "ai-gateway",
+      "genie-one",
+      "genie-code"
+    ]
+  },
+  "created_resources": {}
+}

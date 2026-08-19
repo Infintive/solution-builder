@@ -25,7 +25,7 @@
 #   --lakebase-url URL          Embed Lakebase PostgreSQL connection URL
 #
 # Environment variables:
-#   AI_DEV_KIT_BRANCH           Same as --das-branch / --ai-dev-kit-branch
+#   DATABRICKS_AGENT_SKILL_BRANCH           Same as --das-branch / --ai-dev-kit-branch
 #   LAKEBASE_PG_URL             Same as --lakebase-url
 #
 # Requirements:
@@ -60,7 +60,7 @@ REBUILD_FRONTEND=false
 REBUILD_BACKEND=false
 CLEAN=false
 # Databricks Agent Skills (DAS) branch — pure skills, no Python packages.
-DAS_BRANCH="${DAS_BRANCH:-${AI_DEV_KIT_BRANCH:-main}}"
+DAS_BRANCH="${DAS_BRANCH:-${DATABRICKS_AGENT_SKILL_BRANCH:-main}}"
 LAKEBASE_URL="${LAKEBASE_PG_URL:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -90,7 +90,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --ai-dev-kit-branch)
-            AI_DEV_KIT_BRANCH="$2"
+            DATABRICKS_AGENT_SKILL_BRANCH="$2"
             shift 2
             ;;
         --lakebase-url)
@@ -123,27 +123,27 @@ if [ "$REBUILD_BACKEND" = true ]; then
 fi
 
 # ==============================================================================
-# Clone the Databricks Agent Skills repo if not present (dir kept as ai_dev_kit/)
+# Clone the Databricks Agent Skills repo if not present (dir kept as databricks_agent_skill/)
 # ==============================================================================
 DAS_REPO="https://github.com/databricks/databricks-agent-skills.git"
 
-if [ ! -d "$APP_DIR/ai_dev_kit" ]; then
+if [ ! -d "$APP_DIR/databricks_agent_skill" ]; then
     echo -e "${CYAN}Cloning databricks-agent-skills (branch: $DAS_BRANCH)...${NC}"
-    git clone --branch "$DAS_BRANCH" "$DAS_REPO" "$APP_DIR/ai_dev_kit"
+    git clone --branch "$DAS_BRANCH" "$DAS_REPO" "$APP_DIR/databricks_agent_skill"
     echo -e "${GREEN}databricks-agent-skills cloned successfully${NC}"
-elif [ ! -d "$APP_DIR/ai_dev_kit/skills" ] || [ "$(cd "$APP_DIR/ai_dev_kit" && git remote get-url origin 2>/dev/null)" != "$DAS_REPO" ]; then
+elif [ ! -d "$APP_DIR/databricks_agent_skill/skills" ] || [ "$(cd "$APP_DIR/databricks_agent_skill" && git remote get-url origin 2>/dev/null)" != "$DAS_REPO" ]; then
     # Wrong structure or a stale ai-dev-kit clone - remove and re-clone.
-    echo -e "${YELLOW}ai_dev_kit folder is stale/wrong-remote, re-cloning...${NC}"
-    rm -rf "$APP_DIR/ai_dev_kit"
-    git clone --branch "$DAS_BRANCH" "$DAS_REPO" "$APP_DIR/ai_dev_kit"
+    echo -e "${YELLOW}databricks_agent_skill folder is stale/wrong-remote, re-cloning...${NC}"
+    rm -rf "$APP_DIR/databricks_agent_skill"
+    git clone --branch "$DAS_BRANCH" "$DAS_REPO" "$APP_DIR/databricks_agent_skill"
     echo -e "${GREEN}databricks-agent-skills cloned successfully${NC}"
 else
     # Check if we need to switch branches or update
-    CURRENT_BRANCH=$(cd "$APP_DIR/ai_dev_kit" && git branch --show-current)
+    CURRENT_BRANCH=$(cd "$APP_DIR/databricks_agent_skill" && git branch --show-current)
     if [ "$CURRENT_BRANCH" != "$DAS_BRANCH" ]; then
         # Different branch - do a complete reset to avoid stale files
         echo -e "${YELLOW}Switching databricks-agent-skills to branch: $DAS_BRANCH (full reset)${NC}"
-        (cd "$APP_DIR/ai_dev_kit" && \
+        (cd "$APP_DIR/databricks_agent_skill" && \
             git fetch origin && \
             git checkout "$DAS_BRANCH" && \
             git reset --hard "origin/$DAS_BRANCH" && \
@@ -152,7 +152,7 @@ else
     else
         # Same branch - hard reset to origin to ensure clean state
         echo -e "${CYAN}Updating databricks-agent-skills (branch: $DAS_BRANCH)...${NC}"
-        (cd "$APP_DIR/ai_dev_kit" && \
+        (cd "$APP_DIR/databricks_agent_skill" && \
             git fetch origin && \
             git reset --hard "origin/$DAS_BRANCH" && \
             git clean -fdx) && \

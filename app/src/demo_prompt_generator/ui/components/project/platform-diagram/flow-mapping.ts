@@ -15,6 +15,7 @@ import {
   type NodePosition,
   type BandId,
   type AnnotationData,
+  logoFootprint,
 } from "@/lib/platform-architecture";
 import { type NodeData, type EdgeData, nodeFootprint, nodeTypeFor } from "./shared";
 import { ANNOTATION_DEFAULT_SIZE, type AnnotationNodeData } from "./annotations";
@@ -57,17 +58,29 @@ export function schemaToFlow(
     // build it straight from the saved annotation props.
     if (pos.annotation) {
       const sz = ANNOTATION_DEFAULT_SIZE[pos.annotation.variant];
-      const fp = nodeFootprint({ id, label: "", icon: "data", desc: "", state: "active" } as PlatformComponent, { w: pos.w ?? sz.w, h: pos.h ?? sz.h, rot: pos.rot });
+      // A captioned LOGO with no explicit w/h (e.g. col-placed) sizes its box to
+      // the full icon+caption footprint, so the box wraps the centered icon+text
+      // unit tightly (matches computeLayout's sizeOf + the render). An explicit
+      // w/h (dragged / add-time-sized) still wins.
+      const base =
+        pos.annotation.variant === "logo" && !pos.w && !pos.h
+          // A same-lane captioned-logo group imposes a uniform width (step 2.5's
+          // derived `laneW`) so the cards match + icons align; otherwise the box
+          // hugs the icon+caption footprint. An explicit w/h still wins.
+          ? (() => { const f = logoFootprint(sz.w, sz.h, pos.annotation); return { w: pos.laneW ?? f.w, h: f.h }; })()
+          : { w: pos.w ?? sz.w, h: pos.h ?? sz.h };
+      const fp = nodeFootprint({ id, label: "", icon: "data", desc: "", state: "active" } as PlatformComponent, { w: base.w, h: base.h, rot: pos.rot });
       nodes.push({
         id,
         type: "annotation",
         position: { x: pos.x, y: pos.y },
         width: fp.w,
         height: fp.h,
-        zIndex: pos.z ?? NODE_Z,
+        zIndex: pos.z ?? pos.autoZ ?? NODE_Z,
         style: { width: fp.w, height: fp.h },
         data: {
           nodeId: id,
+          type: pos.type ?? pos.annotation.variant,
           annotation: pos.annotation,
           component: { id, label: "", icon: "data", desc: "", state: "active" } as PlatformComponent,
           bandId: "sources" as BandId,
@@ -75,7 +88,11 @@ export function schemaToFlow(
           deepLink: null,
           onSelect, onContext, onResize, onRename, onSetDescription, onAnnotate,
           rot: pos.rot ?? 0,
-          w: pos.w, h: pos.h, scale: pos.scale,
+          // Keep w/h as the FILE's explicit size (undefined for a col-placed logo,
+          // so it round-trips symbolically — no frozen `size` on save). The render
+          // (RotatableCard for a captioned logo) derives the footprint itself when
+          // w/h are absent, filling the RF box computed above.
+          w: pos.w, h: pos.h, laneW: pos.laneW, scale: pos.scale,
           opacity: pos.opacity, fillColor: pos.fillColor, fontColor: pos.fontColor, iconColor: pos.iconColor,
           borderWidth: pos.borderWidth, borderStyle: pos.borderStyle, borderColor: pos.borderColor, borderRadius: pos.borderRadius, shadow: pos.shadow, groupId: pos.groupId,
         } satisfies AnnotationNodeData,
@@ -92,13 +109,14 @@ export function schemaToFlow(
       const fp = nodeFootprint(component, pos);
       nodes.push({
         id, type: "component", position: { x: pos.x, y: pos.y },
-        width: fp.w, height: fp.h, zIndex: pos.z ?? NODE_Z, style: { width: fp.w, height: fp.h },
+        width: fp.w, height: fp.h, zIndex: pos.z ?? pos.autoZ ?? NODE_Z, style: { width: fp.w, height: fp.h },
         data: {
-          nodeId: id, component, bandId: "sources" as BandId, bandColor: BAND_COLOR.sources,
+          nodeId: id, type: pos.type ?? "source", component, bandId: "sources" as BandId, bandColor: BAND_COLOR.sources,
           deepLink: null, onSelect, onContext, onResize, onRename, onSetDescription,
           allowTrademark: schema.enableTrademarkLogos ?? false,
           sourceKey: pos.source.key,
           sourceCaption: pos.sourceCaption,
+          laneW: pos.laneW,
           fontSize: pos.fontSize,
           desc: pos.desc,
           showDesc: pos.showDesc,
@@ -110,18 +128,20 @@ export function schemaToFlow(
       });
       continue;
     }
-    // Node id may be an instance id (`genie#2`); resolve the catalog component
-    // by its base id, but keep the instance id as the ReactFlow node id.
+    // Resolve the catalog component by the node's TYPE (the source of truth) —
+    // the `id` is a free-form instance handle and need not equal the type. Keep
+    // the id as the ReactFlow node id.
     if (hidden.has(id)) continue;
-    // Unknown id (e.g. a diagram saved before a catalog id was renamed): don't
-    // silently drop it — render a labeled placeholder tile so the node is still
-    // visible + editable. No migration needed; the user can re-pick its type.
-    const found = lookup.get(baseId(id)) ?? {
+    const compType = pos.type ?? baseId(id); // pos.type is always set on parse; fallback is defensive
+    // Unknown type (e.g. a component id removed from the catalog): don't silently
+    // drop it — render a labeled placeholder tile so the node stays visible +
+    // editable. The user can re-pick its type.
+    const found = lookup.get(compType) ?? {
       component: {
-        id: baseId(id),
-        label: baseId(id),
+        id: compType,
+        label: compType,
         icon: "data" as const,
-        desc: "Unknown component — this id isn't in the catalog (it may have been renamed). Pick a type or update the id.",
+        desc: "Unknown component — this type isn't in the catalog (it may have been removed or renamed). Pick a type.",
         state: "active" as const,
       } satisfies PlatformComponent,
       bandId: "sources" as BandId,
@@ -147,14 +167,15 @@ export function schemaToFlow(
       // fills 100%, so the selection frame + resizer + visual never drift.
       width: fp.w,
       height: fp.h,
-      zIndex: pos.z ?? NODE_Z,
+      zIndex: pos.z ?? pos.autoZ ?? NODE_Z,
       style: { width: fp.w, height: fp.h },
       data: {
         nodeId: id,
+        type: compType,
         component,
         bandId,
         bandColor: BAND_COLOR[bandId],
-        deepLink: deepLinks[baseId(id)] ?? null,
+        deepLink: deepLinks[compType] ?? null,
         onSelect,
         onContext,
         onResize,
@@ -175,6 +196,7 @@ export function schemaToFlow(
         shadow: pos.shadow,
         groupId: pos.groupId,
         sourceCaption: pos.sourceCaption,
+        laneW: pos.laneW,
         fontSize: pos.fontSize,
         desc: pos.desc,
         showDesc: pos.showDesc,
@@ -195,7 +217,7 @@ export function schemaToFlow(
     if (pos.pinned) d.pinned = true;
     if (pos.params) d.params = pos.params;
     if (pos.stack && pos.stack > 1) d.stack = pos.stack;
-    if (pos.note) d.note = pos.note;
+    if (pos.ai_reasoning) d.ai_reasoning = pos.ai_reasoning;
   }
 
   // Heal saved edge handles against the handles a node ACTUALLY exposes right
@@ -299,7 +321,7 @@ export function flowToLayout(nds: Node[], eds: Edge[], schema: PlatformSchema): 
     // user renamed the node or changed its type on the canvas. For catalog
     // nodes the default is the catalog component; for canvas-added sources
     // (`dd.sourceKey`, not in the catalog) it's the logo's catalog label.
-    const base = catalog.get(baseId(n.id))?.component;
+    const base = catalog.get(dd.type)?.component;
     const defLabel = base ? base.label : dd.sourceKey ? logoLabel(dd.sourceKey) : undefined;
     const labelOv = defLabel !== undefined && dd.component.label !== defLabel ? dd.component.label : undefined;
     const iconOv = base && dd.component.icon !== base.icon ? dd.component.icon : undefined;
@@ -313,9 +335,13 @@ export function flowToLayout(nds: Node[], eds: Edge[], schema: PlatformSchema): 
         : undefined;
     // Annotation nodes carry their full props (text/icon/src/alignment).
     const anno = (dd as Partial<AnnotationNodeData>).annotation;
+    // A wrapping box (its z is the auto default, not to be persisted). Boxes keep
+    // their `wraps` in placement (symbolic, un-pinned).
+    const isWrappingBox = !!(dd.placement?.wraps?.length);
     positions[n.id] = {
       x: Math.round(n.position.x),
       y: Math.round(n.position.y),
+      type: dd.type,
       ...(rot ? { rot } : {}),
       ...(dd.w ? { w: Math.round(dd.w) } : {}),
       ...(dd.h ? { h: Math.round(dd.h) } : {}),
@@ -344,19 +370,22 @@ export function flowToLayout(nds: Node[], eds: Edge[], schema: PlatformSchema): 
       // author choice and must round-trip — only skip the NODE_Z default (a
       // node with no authored z already renders at NODE_Z, so n.zIndex is 1, not
       // 0; only an intentional z:0 reaches here as 0).
-      ...(typeof n.zIndex === "number" && n.zIndex !== NODE_Z ? { z: n.zIndex } : {}),
+      // EXCEPTION: a wrapping box's negative z is the AUTO default (autoBoxZ),
+      // recomputed on every parse — never persist it (else every box would grow
+      // a hand-set `z`, the footgun we removed). A box needs no `z` in the file.
+      ...(typeof n.zIndex === "number" && n.zIndex !== NODE_Z && !(isWrappingBox && n.zIndex < 0) ? { z: n.zIndex } : {}),
       // Round-trip symbolic placement: an unmoved node (dd.placement set, not
       // pinned) re-emits its col/relational fields; a dragged/at node is pinned.
       ...(dd.placement && !dd.pinned ? { placement: dd.placement } : {}),
       ...(dd.pinned ? { pinned: true } : {}),
       ...(dd.params && Object.keys(dd.params).length ? { params: dd.params } : {}),
       ...(dd.stack && dd.stack > 1 ? { stack: dd.stack } : {}),
-      ...(dd.note ? { note: dd.note } : {}),
+      ...(dd.ai_reasoning ? { ai_reasoning: dd.ai_reasoning } : {}),
     };
   });
-  // `hidden` is keyed by catalog (base) ids: a component is hidden iff NO
-  // instance of it is on the canvas (collapse `genie#2` → `genie`).
-  const placed = new Set(nds.map((n) => baseId(n.id)));
+  // `hidden` is keyed by catalog component TYPE: a component is hidden iff NO
+  // instance of that type is on the canvas (two instances share one `type`).
+  const placed = new Set(nds.map((n) => (n.data as NodeData).type));
   const hidden = [...componentLookup(schema).keys()].filter((id) => !placed.has(id));
   const layoutEdges: PlatformEdge[] = eds.map((e) => {
     const ed = e.data as EdgeData | undefined;

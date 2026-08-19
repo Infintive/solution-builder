@@ -345,10 +345,7 @@
               "encodings": {
                 "value": {
                   "fieldName": "measure(Demand Units)",
-                  "displayName": "Weekly demand",
-                  "color": {
-                    "value": "#5FA6DE"
-                  }
+                  "displayName": "Weekly demand"
                 },
                 "period": {
                   "fieldName": "Week"

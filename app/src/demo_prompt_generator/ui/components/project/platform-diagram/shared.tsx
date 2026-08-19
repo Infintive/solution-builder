@@ -6,7 +6,7 @@
  */
 import { createContext, useContext, useRef, type CSSProperties } from "react";
 import { Handle, Position, NodeResizeControl, useStore } from "@xyflow/react";
-import { naturalSize, medallionSize, type PlatformComponent, type BandId, type FlowStyle, type NodePosition } from "@/lib/platform-architecture";
+import { naturalSize, medallionSize, governanceSize, type PlatformComponent, type BandId, type FlowStyle, type NodePosition } from "@/lib/platform-architecture";
 
 export type { FlowStyle };
 // Re-exported so the composite + node components keep importing it from here
@@ -23,6 +23,10 @@ export interface NodeData {
    *  must use this, NOT `component.id` (the base catalog id), so duplicates of
    *  the same component resize/select/move independently. */
   nodeId: string;
+  /** The node's catalog component TYPE (`FileNode.type`) — the source of truth
+   *  for which component this is. `nodeId` is a free-form instance handle and need
+   *  NOT equal `type`. The catalog resolve + serialize key off this, not the id. */
+  type: string;
   component: PlatformComponent;
   bandId: BandId;
   bandColor: string;
@@ -76,21 +80,28 @@ export interface NodeData {
   /** True once the node was authored with `at` or the user dragged it → it
    *  serializes as pixel `at`, not symbolic. See NodePosition.pinned. */
   pinned?: boolean;
-  /** Enabled toggleable component options (checkboxes in the edit panel). A
-   *  composite reads these to render conditionally. See PlatformComponent.options. */
-  params?: Record<string, boolean>;
+  /** Component options (checkboxes in the edit panel + string values). A
+   *  composite reads these to render conditionally (boolean toggles) or to draw
+   *  text (string options, e.g. the medallion's `*_desc` layer captions). See
+   *  PlatformComponent.options. */
+  params?: Record<string, boolean | string>;
   /** Render as a STACK of N cards (blank offset copies peeking bottom-right) to
    *  signal "many of these". 1/undefined = single card. See RotatableCard. */
   stack?: number;
-  /** Authoring NOTE (never rendered) — carried only so it survives the RF
-   *  round-trip on save. See FileNode.note in platform-architecture.ts. */
-  note?: string;
+  /** AI reasoning (never rendered) — carried only so it survives the RF
+   *  round-trip on save. See FileNode.ai_reasoning in platform-architecture.ts. */
+  ai_reasoning?: string;
   /** For canvas-added sources ("+ more data sources"): the logo-catalog key,
    *  persisted so the source round-trips without a catalog entry. */
   sourceKey?: string;
   /** Source tiles only: where the label sits relative to the icon
    *  (right default | left | top | bottom). Mirrors the logo caption option. */
   sourceCaption?: "right" | "left" | "top" | "bottom";
+  /** DERIVED lane-uniform width (computeLayout step 2.5) for a captioned
+   *  logo/source in a same-lane group. When set, the RF node box + the card
+   *  render use it as the box width so grouped cards match + icons align. Not
+   *  persisted (recomputed on parse) — flowToLayout drops it. */
+  laneW?: number;
   /** Editable description line under the title. For catalog product tiles this
    *  overrides the CATALOG default; for sources it's the only source. */
   desc?: string;
@@ -249,21 +260,31 @@ export function nodeTypeFor(c: PlatformComponent): string {
 /** Base (un-rotated) footprint of each node type — needed so the rotatable
  *  shell can swap W/H for 90°/270° and ReactFlow's handles land on the real
  *  rotated edges (not the original box). */
-export function baseSize(c: PlatformComponent): { w: number; h: number } {
+export function baseSize(c: PlatformComponent, params?: Record<string, boolean | string>): { w: number; h: number } {
   // Single source of truth lives in the lib layer (naturalSize), keyed by the
   // component's composite kind / id. A composite kind takes priority over the
   // id (naturalSize keys composites by their catalog id, but a runtime
   // component may carry only `kind`), so branch on kind here first, then defer
   // to naturalSize for plain tiles / sublabel sizing.
-  if (c.kind === "lakeflow") return { w: 224, h: 148 };
-  if (c.kind === "lakeflow-genie") return { w: 360, h: 208 };
+  // Lakeflow blocks grow when a medallion LAYER DESC (`bronze_desc`/…) is set —
+  // wider (title-row open-format logos + spread layers) and taller (caption line).
+  const lfDesc = !!(layerDescParam(params, "bronze") || layerDescParam(params, "silver") || layerDescParam(params, "gold"));
+  if (c.kind === "lakeflow") return lfDesc ? { w: 312, h: 176 } : { w: 268, h: 148 };
+  if (c.kind === "lakeflow-genie") return lfDesc ? { w: 380, h: 232 } : { w: 360, h: 208 };
   if (c.kind === "agent-bricks") return { w: 230, h: 170 };
   if (c.kind === "genie-code") return { w: 360, h: 112 };
-  if (c.kind === "governance") return { w: 580, h: 108 };
+  if (c.kind === "governance") return governanceSize(params);
   if (c.kind === "db-platform") return { w: 380, h: 60 };
   if (c.kind === "ai-gateway") return { w: 240, h: 104 };
-  if (c.kind === "medallion-table") return medallionSize();
-  return naturalSize(c.id);
+  if (c.kind === "medallion-table") return medallionSize(params);
+  return naturalSize(c.id, params);
+}
+
+/** Local mirror of the lib `layerDescOf` (kept here to avoid a component→lib
+ *  cycle in the hot baseSize path): a `<layer>_desc` param as a non-blank string. */
+function layerDescParam(params: Record<string, boolean | string> | undefined, layer: string): string | undefined {
+  const v = params?.[`${layer}_desc`];
+  return typeof v === "string" && v.trim() ? v : undefined;
 }
 
 /** Default box for a SOURCE tile with a vertical caption (top/bottom) — the
@@ -303,14 +324,19 @@ export function logoFitSize(text: string, horizontal: boolean, fontSize = 13, bo
  *  `sourceCaption` (top/bottom) switches an unsized source to the taller box. */
 export function nodeFootprint(
   c: PlatformComponent,
-  pos: { w?: number; h?: number; rot?: number; sourceCaption?: "right" | "left" | "top" | "bottom"; params?: Record<string, boolean> },
+  pos: { w?: number; h?: number; rot?: number; sourceCaption?: "right" | "left" | "top" | "bottom"; laneW?: number; params?: Record<string, boolean | string> },
 ): { w: number; h: number } {
   const vertical = pos.sourceCaption === "top" || pos.sourceCaption === "bottom";
-  // Medallion grows with its fork options — size from params so the ReactFlow
-  // node box (this) matches the composite's render.
+  // Size from params so the ReactFlow node box (this) matches the composite's
+  // render as it grows: the medallion with its fork options, and the lakeflow
+  // blocks with layer captions (baseSize reads params for both; ignores them
+  // for kinds that don't).
   const nat = c.kind === "medallion-table" ? medallionSize(pos.params)
-    : vertical ? VERTICAL_SOURCE_SIZE : baseSize(c);
-  const w = pos.w ?? nat.w;
+    : vertical ? VERTICAL_SOURCE_SIZE : baseSize(c, pos.params);
+  // A same-lane captioned group imposes a uniform width (step 2.5's `laneW`) so
+  // the cards match + icons align. An explicit user w/h still wins; `laneW` only
+  // fills in for an unsized (symbolic) horizontal-caption tile.
+  const w = pos.w ?? (!vertical && pos.laneW ? pos.laneW : nat.w);
   const h = pos.h ?? nat.h;
   const q = (((pos.rot ?? 0) % 360) + 360) % 360;
   return q === 90 || q === 270 ? { w: h, h: w } : { w, h };
@@ -354,7 +380,7 @@ const gripShift = {
  *  ink centroid == the SVG center for BOTH shapes, the caller can place all 8
  *  grips with ONE formula (center the GRIP_LEN box on a common offset ring) and
  *  they line up with no per-side fudge. */
-function GripStroke({ shape }: { shape: "top-left" | "top-right" | "bottom-right" | "bottom-left" | "h" | "v" }) {
+export function GripStroke({ shape }: { shape: "top-left" | "top-right" | "bottom-right" | "bottom-left" | "h" | "v" }) {
   const L = GRIP_LEN;
   const C = L / 2; // SVG center — every grip's ink is anchored here
   let d: string;

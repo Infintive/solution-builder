@@ -54,7 +54,7 @@
       { "id": "unity-catalog", "type": "unity-catalog",
         "desc": "One governed catalog — access, lineage, Attribute Based Access Control and semantics across data + AI.",
         "style": { "border": 0, "shadow": 0 },
-        "note": "NO col/row/at — auto-seeded: its only placement is `wraps` by the metastore, which sizes around it and carries it below the workspaces via the box's `below`." },
+        "ai_reasoning": "NO col/row/at — auto-seeded: its only placement is `wraps` by the metastore, which sizes around it and carries it below the workspaces via the box's `below`." },
 
       // Catalog boxes wrap their lane's schema logos (dbCatalog title icon).
       { "id": "cat-prod", "type": "box", "title": "Catalog Prod", "titleIcon": "dbCatalog", "z": -1, "wraps": ["prod-bronze", "prod-silver", "prod-gold", "prod-models"] },
@@ -69,12 +69,12 @@
       { "id": "metastore", "type": "box", "title": "Databricks Metastore", "titleIcon": "databricksMetastore", "z": -3,
         "wraps": ["unity-catalog"], "below": "ws-prod", "gap": 50,
         "bounds": { "left": "col:prod:left", "right": "col:dev:right" },
-        "note": "Placed BELOW the workspaces via `below: ws-prod`; `bounds` spans both catalog columns; height auto-fits its wrapped Unity Catalog tile. No pixels." },
+        "ai_reasoning": "Placed BELOW the workspaces via `below: ws-prod`; `bounds` spans both catalog columns; height auto-fits its wrapped Unity Catalog tile. No pixels." },
 
       // Outermost: the account wraps both workspaces + the metastore.
       { "id": "account", "type": "box", "title": "Databricks Admin Account", "titleIcon": "file:vendor/databricks-admin", "z": -4,
         "wraps": ["ws-prod", "ws-dev", "metastore"],
-        "note": "Full containment via `wraps` (no `at`): Account ⊃ (Workspace ⊃ Catalog ⊃ schema logos) + Metastore ⊃ Unity Catalog. Descending z outward (account -4 < ws -2 < catalog -1 < logos 0). Only the metastore uses a `bounds` hint to span the bottom." }
+        "ai_reasoning": "Full containment via `wraps` (no `at`): Account ⊃ (Workspace ⊃ Catalog ⊃ schema logos) + Metastore ⊃ Unity Catalog. Descending z outward (account -4 < ws -2 < catalog -1 < logos 0). Only the metastore uses a `bounds` hint to span the bottom." }
     ],
     "edges": [
       { "id": "e-cat-prod-meta", "from": "cat-prod@b", "to": "metastore@t", "flow": true },

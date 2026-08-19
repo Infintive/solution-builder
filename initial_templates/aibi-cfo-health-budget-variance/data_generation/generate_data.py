@@ -48,6 +48,14 @@ Python version to match serverless; a 3.11 client fails the pandas_udf step):
   DATABRICKS_CONFIG_PROFILE=field-eng \
       python generate_data.py --catalog dbdemos_templates --schema aibi_cfo_health_budget_variance
 """
+
+# SQL safety: when a SQL statement needs a runtime TEXT value (a column/table
+# COMMENT, a WHEN/WHERE literal, an inserted string), pass it as a bound
+# PARAMETER — spark.sql("... IS :txt", args={"txt": val}) — never f-string it
+# into a '...' literal. Spark quotes/escapes the value, so an apostrophe
+# ("O'Brien", "customer's") is safe with no manual '' escaping. Identifiers
+# (catalog/schema/table/column) are structure, not values — they stay in the
+# f-string (backtick-quote them). See gold_vendor_spend below for the pattern.
 import argparse
 import datetime as dt
 import os
@@ -517,8 +525,14 @@ print("   gold_staffing_summary: built")
 
 # gold_vendor_spend — one row per (vendor_name, department): current-year YTD spend +
 # prior-year spend + yoy_multiple. Apex Clinical Staffing on Nursing is the top row.
-_prior_case = " ".join(
-    [f"WHEN vendor_name = '{v}' THEN {p}" for v, p in VENDOR_PRIOR.items()])
+# The prior-year lookup is a CASE over vendor_name. Bind each vendor name as a
+# named PARAMETER (`:v0`, `:v1`, …) rather than f-string-interpolating it into a
+# SQL '...' literal — Spark quotes/escapes the value, so a vendor name with an
+# apostrophe ("O'Brien Staffing") is safe with no manual escaping. Amounts are
+# numeric constants, so they stay inline.
+_vendors = list(VENDOR_PRIOR.items())
+_prior_case = " ".join(f"WHEN vendor_name = :v{i} THEN {p}" for i, (_, p) in enumerate(_vendors))
+_prior_args = {f"v{i}": name for i, (name, _) in enumerate(_vendors)}
 spark.sql(f"""
 CREATE OR REPLACE TABLE {FQ}.gold_vendor_spend
 COMMENT 'Agency staffing spend by vendor and department: current-year YTD vs prior-year, with the YoY multiple. Apex Clinical Staffing dominates Nursing agency spend (~3.5x YoY) — the single vendor behind the contract-labor surge.'
@@ -531,7 +545,7 @@ SELECT vendor_name, department,
        ROUND(spend_ytd_usd / NULLIF(CASE {_prior_case} ELSE 0 END, 0), 2) AS yoy_multiple
 FROM cur
 ORDER BY spend_ytd_usd DESC
-""")
+""", args=_prior_args)
 print("   gold_vendor_spend: built")
 
 # gold_revenue — one row per fiscal_month: recognized revenue + prior-year + YoY %.

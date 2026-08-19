@@ -89,7 +89,7 @@ Add `genie_space_id` to `resources.json`.
 
 Create `LuxeBeauty Operations` dashboard. Save locally as `PROJECT/dashboard.json`. Link the Genie space from section A.
 
-Reminder: set `--dataset-catalog` and `--dataset-schema` when running `databricks lakeview create`.
+Reminder: set `--dataset-catalog` and `--dataset-schema` when running `databricks lakeview create` and `databricks lakeview update` (update strips them otherwise).
 
 ### Why this dashboard works (design principles, copy in spirit not pixel)
 

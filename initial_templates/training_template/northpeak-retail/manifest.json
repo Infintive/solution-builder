@@ -1,0 +1,8 @@
+{
+  "id": "northpeak-retail",
+  "name": "Workshop - NorthPeak Retail (Stockout & Markdown Rescue)",
+  "customer": "NorthPeak Retail",
+  "industry": "Retail & CPG",
+  "template_type": "WORKSHOP",
+  "narrative": "Dana Ruiz, a non-technical SVP of Retail Operations, opens her store-ops console and sees the same cold-weather styles glowing two colors on one map: red in the North — dozens of stores sold out while demand climbs — and amber in the South — the identical styles sitting as dead stock with the markdown clock running. One early cold snap, three weeks ago, moved demand North faster than the nightly replenishment plan could react.\n\nShe asks about the worst store: Store 214 in Denver is short on the Summit Down Parka — what's the best recovery move? The assistant ranks the three plays (transfer from a nearby surplus store, expedite from the DC, or substitute a comparable parka), each with cost, margin, and predicted recaptured revenue from a model trained on NorthPeak's own recovery history. It recommends the transfer, drafts the request, and stops for approval. Dana approves; the move writes back to Lakebase and the queue ticks live — governed lakehouse data turned into a store-floor action, with the assistant's AI spend capped and attributable per store.\n\nWorkshop training template (Tech Summit FY27 Live Days): data generator + full spec set (SDP pipeline, metric views, recovery model, dashboard + Genie, and a Databricks App with a Visualize/Assist/Act agent loop over Lakebase). Maps to the three build milestones — Lakebase, Databricks Apps, Unity AI Gateway."
+}

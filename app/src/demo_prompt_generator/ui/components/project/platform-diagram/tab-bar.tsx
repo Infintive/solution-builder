@@ -54,7 +54,10 @@ export const TabBar = memo(function TabBar({
 
   return (
     <>
-      <div className="absolute left-0 top-0 z-10 flex max-w-[calc(100%-13rem)] items-stretch gap-px overflow-x-auto border-b border-r border-border bg-card/95 backdrop-blur">
+      {/* Tab strip spans the top row. The floating action bar now sits a row
+          lower (top-8), so the tabs get nearly the full width before scrolling —
+          only a small right margin is reserved. */}
+      <div className="absolute left-0 top-0 z-10 flex max-w-[calc(100%-3rem)] items-stretch gap-px overflow-x-auto border-b border-r border-border bg-card/95 backdrop-blur">
         {names.map((name, i) => {
           const active = i === activeIndex;
           return (

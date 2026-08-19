@@ -41,8 +41,9 @@ from ..core.auth import (
     detect_mode,
     make_project_auth_refresher,
     subprocess_auth_env,
+    target_deploy_active,
 )
-from ..models import User
+from ..models import Project, User
 from ..services.llm_service import LLMService, ModelSize
 from sqlmodel import select
 from fastapi import Depends
@@ -126,22 +127,35 @@ def register_routes(
         project_id: str,
         headers: Dependencies.Headers,
         session: Dependencies.Session,
+        config: Dependencies.Config,
     ) -> dict[str, str]:
         """Build the Databricks auth env for the preview subprocess.
 
         Thin wrapper around core.auth.subprocess_auth_env — resolves the
         local-mode profile from the single User row (same pattern as the
         agent route). See backend/AUTH.md.
+
+        Cross-workspace SP-target: mirror the agent route — when this project
+        deploys to a remote target workspace via the deployer SP, pass
+        target_deploy=True so subprocess_auth_env pins oauth-m2m + the SP
+        creds/host from the project's .databrickscfg. Without it the preview
+        falls into the OBO/PAT branch, which scrubs the SP creds and expects a
+        PAT that isn't there → the preview app fails to authenticate and never
+        binds its port. The refresher (make_project_auth_refresher) already
+        writes the SP file for these projects; this makes the READ side agree.
         """
         mode = detect_mode(headers)
         local_profile: str | None = None
         if mode == "local":
             user = session.exec(select(User).limit(1)).first()
             local_profile = user.databricks_profile if user else None
+        project = session.get(Project, project_id)
+        target_host = project.target_workspace_host if project else None
         return subprocess_auth_env(
             get_project_dir(project_id),
             mode=mode,
             local_profile=local_profile,
+            target_deploy=target_deploy_active(config, target_host),
         )
 
     # ---- Lifecycle endpoints -----------------------------------------------
@@ -155,9 +169,10 @@ def register_routes(
         project_id: str,
         headers: Dependencies.Headers,
         session: Dependencies.Session,
+        config: Dependencies.Config,
     ) -> PreviewStateOut:
         try:
-            extra_env = _subprocess_auth_env(project_id, headers, session)
+            extra_env = _subprocess_auth_env(project_id, headers, session, config)
             state = await registry.start(project_id, extra_env=extra_env)
         except NotReadyError as e:
             raise HTTPException(status_code=409, detail=str(e))
@@ -179,9 +194,10 @@ def register_routes(
         project_id: str,
         headers: Dependencies.Headers,
         session: Dependencies.Session,
+        config: Dependencies.Config,
     ) -> PreviewStateOut:
         try:
-            extra_env = _subprocess_auth_env(project_id, headers, session)
+            extra_env = _subprocess_auth_env(project_id, headers, session, config)
             state = await registry.restart(project_id, extra_env=extra_env)
         except NotReadyError as e:
             raise HTTPException(status_code=409, detail=str(e))

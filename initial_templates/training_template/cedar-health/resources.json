@@ -1,0 +1,25 @@
+{
+  "short_description": "Cedar Health — a value-based-care system's readmission-and-intervention rescue. Post-discharge care gaps pushed a cohort of recently-discharged heart-failure patients into rising 30-day readmission risk, faster than the batch report could surface. A care-coordinator app reads governed clinical data at low latency, an intervention recommendation ranks the play (follow-up call / medication reconciliation / home-health referral) per at-risk patient against team capacity, and a population-health lead approves — turning governed lakehouse data into a coordinator action, with PHI kept inside the governed boundary and the assistant's AI spend bounded on thin margins.",
+  "capabilities": {
+    "buildable": [
+      "synthetic-data-gen",
+      "sdp",
+      "metric-views",
+      "aibi-dashboards",
+      "genie",
+      "databricks-apps",
+      "lakebase"
+    ],
+    "optional": [
+      "ml-training-serving"
+    ],
+    "talking_track": [
+      "lakeflow-connect",
+      "unity-catalog",
+      "ai-gateway",
+      "genie-one",
+      "genie-code"
+    ]
+  },
+  "created_resources": {}
+}

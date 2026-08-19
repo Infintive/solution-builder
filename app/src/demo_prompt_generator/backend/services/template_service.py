@@ -27,6 +27,7 @@ from ..models import (
     Template,
     TemplateContent,
     TemplateStatus,
+    TemplateType,
     generate_uuid,
     utc_now,
 )
@@ -37,6 +38,33 @@ from .llm_service import LLMService, ModelSize
 logger = logging.getLogger(__name__)
 
 PROJECTS_BASE_DIR = os.getenv("PROJECTS_BASE_DIR", "./projects")
+
+# Process-level cache for the template-search LLM re-rank: normalized query text
+# → ordered list of template ids (best first). Bounded in _llm_rerank. Keyed by
+# query only (the candidate SET for a given query is stable enough for a demo
+# gallery); insertion order = eviction order (drop oldest when full).
+_RERANK_CACHE: dict[str, list[str]] = {}
+
+
+def _extract_id_list(raw: str) -> list[str] | None:
+    """Parse a JSON array of id strings out of an LLM reply (tolerating code
+    fences / stray prose). Returns the list, or None if nothing parseable."""
+    if not raw:
+        return None
+    text_ = raw.strip()
+    # Grab the first [...] block so surrounding prose/fences don't break parsing.
+    start = text_.find("[")
+    end = text_.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        val = json.loads(text_[start : end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(val, list):
+        return None
+    ids = [str(x) for x in val if isinstance(x, (str, int))]
+    return ids or None
 
 def _should_include_in_template(relative_path: str) -> bool:
     """A template carries the whole demo a fork can deploy — narrative (README,
@@ -340,6 +368,16 @@ class TemplateService:
             )
         )
 
+        # Template kind, derived from the source project's mode: an architecture-only
+        # project publishes as ARCHITECTURE, a Genie-Code workshop as GENIE_WORKSHOP,
+        # everything else (a normal story-mode demo) as SOLUTION. Workshop TRAINING
+        # templates aren't user-published — they're seeded from initial_templates/.
+        mode_to_type = {
+            "architecture": TemplateType.ARCHITECTURE.value,
+            "workshop": TemplateType.GENIE_WORKSHOP.value,
+        }
+        template_type = mode_to_type.get(project.mode, TemplateType.SOLUTION.value)
+
         # Create template record
         template_id = generate_uuid()
         template = Template(
@@ -355,6 +393,7 @@ class TemplateService:
             full_description=readme_content,
             capabilities=json.dumps(capabilities),
             customer=project.customer,
+            template_type=template_type,
             submitted_at=utc_now(),
             source_project_id=project_id,
         )
@@ -419,15 +458,33 @@ class TemplateService:
 
         Returns:
             List of template dicts with similarity scores, best first.
+
+        WORKSHOP training templates are always excluded — they surface only via an
+        explicit `?type=WORKSHOP` link on the templates page, never in the general
+        home-page / gallery search that this method backs.
         """
+        # Normalize "unlimited" (callers pass -1 for "all matches"). A raw
+        # `LIMIT -1` returns ZERO rows on our engine (not "all"), so map any
+        # non-positive limit to a large finite cap before it reaches the SQL.
+        if limit <= 0:
+            limit = 1000
+
+        # Official (curated/validated) templates get a small ranking bonus so
+        # that, among comparable matches, the one we trust surfaces first. It's
+        # a FLAT additive nudge — enough to win a near-tie, but small enough that
+        # a clearly-stronger community match still outranks a weak official one.
+        OFFICIAL_BONUS = 0.06
+
         def _row_to_dict(r, similarity: float) -> dict:
+            official = bool(getattr(r, "official", False))
             return {
                 "id": r.id,
                 "name": r.name,
                 "description": r.description,
                 "industry": r.industry,
                 "capabilities": json.loads(r.capabilities) if r.capabilities else [],
-                "similarity": similarity,
+                # Boost official templates; cap at 1.0 so it stays a valid score.
+                "similarity": min(1.0, similarity + (OFFICIAL_BONUS if official else 0.0)),
             }
 
         # Merge helper: keep the highest similarity per id, preserving best-first.
@@ -440,17 +497,20 @@ class TemplateService:
                 if prev is None or d["similarity"] > prev["similarity"]:
                     merged[d["id"]] = d
 
-        # 1) Semantic (pgvector). Best-effort — unavailable on PGLite.
-        semantic_ok = False
+        # 1) Semantic (pgvector). Best-effort enhancement on top of lexical —
+        #    unavailable on PGLite, and a no-op when embeddings aren't populated
+        #    (the `embedding IS NOT NULL` filter simply returns no rows). Lexical
+        #    (below) always runs regardless, so search never depends on this.
         try:
             query_embedding = self.llm.get_embedding(query)
             rows = session.execute(
                 text("""
                     SELECT
-                        id, name, description, industry, capabilities,
+                        id, name, description, industry, capabilities, official,
                         1 - (embedding <=> CAST(:query_embedding AS vector)) AS similarity
                     FROM templates
                     WHERE status = :status
+                    AND template_type != 'WORKSHOP'
                     AND embedding IS NOT NULL
                     ORDER BY embedding <=> CAST(:query_embedding AS vector)
                     LIMIT :limit
@@ -458,40 +518,168 @@ class TemplateService:
                 {"query_embedding": str(query_embedding), "status": status, "limit": limit},
             ).fetchall()
             _add(rows, lambda r: float(r.similarity) if r.similarity is not None else 0.0)
-            semantic_ok = True
         except Exception as e:
             logger.debug(f"pgvector search unavailable, using lexical only: {e}")
             session.rollback()
 
-        # 2) Lexical (ILIKE) on name / industry / description. Always run — it's
-        #    the safety net for typos/fragments the vector misses. Give a fixed
-        #    baseline similarity so a title hit ranks above weak semantic hits
-        #    but below strong ones.
+        # 2) Lexical (ILIKE) — ALWAYS run and BLEND with the semantic hits above
+        #    (`merged` keeps the best score per id). This is what the docstring
+        #    promises. It used to be fallback-only (`if not semantic_ok`), but the
+        #    semantic block sets semantic_ok=True even when it returns ZERO rows —
+        #    e.g. when embeddings aren't populated, `embedding IS NOT NULL` matches
+        #    nothing and no exception is raised. That silently skipped lexical, so
+        #    an obvious literal match like "customer" → "Customer Support" returned
+        #    nothing. Running lexical unconditionally guarantees literal
+        #    name/industry/description/narrative matches always surface, while
+        #    semantic still adds meaning-level matches on top when available.
         try:
+            # Tokenize: split on non-alphanumerics, drop stopwords + short/
+            # generic words so "for", "the", a brand name, etc. don't match
+            # everything.
+            _STOPWORDS = {
+                "a", "an", "the", "for", "of", "to", "and", "or", "with", "in",
+                "on", "my", "our", "we", "use", "using", "build", "builds",
+                "building", "solution", "demo", "app", "data", "databricks",
+            }
+            raw_tokens = re.split(r"[^a-zA-Z0-9]+", query.lower())
+            tokens = [t for t in raw_tokens if len(t) >= 3 and t not in _STOPWORDS]
+            # De-dupe, cap to keep the SQL bounded.
+            seen_tok: set[str] = set()
+            tokens = [t for t in tokens if not (t in seen_tok or seen_tok.add(t))][:8]
+
+            # Match the whole phrase broadly (name/industry/description/narrative),
+            # but INDIVIDUAL tokens only against high-signal fields (name +
+            # industry + description) — matching a lone token against the long
+            # narrative would pull in unrelated templates. Score by how many
+            # distinct tokens hit, phrase matches weighted highest.
+            clauses: list[str] = []
+            params: dict[str, object] = {"status": status, "limit": limit}
+            score_terms: list[str] = []
+            phrase_fields = ("name", "industry", "description", "narrative")
+            token_fields = ("name", "industry", "description")
+            params["q_phrase"] = query
+            phrase_or = " OR ".join(f"{f} ILIKE '%' || :q_phrase || '%'" for f in phrase_fields)
+            clauses.append(f"({phrase_or})")
+            score_terms.append(
+                "(CASE WHEN " + " OR ".join(
+                    f"{f} ILIKE '%' || :q_phrase || '%'" for f in phrase_fields
+                ) + " THEN 3 ELSE 0 END)"
+            )
+            for i, tok in enumerate(tokens):
+                key = f"q_tok_{i}"
+                params[key] = tok
+                tok_or = " OR ".join(f"{f} ILIKE '%' || :{key} || '%'" for f in token_fields)
+                clauses.append(f"({tok_or})")
+                score_terms.append(
+                    "(CASE WHEN " + " OR ".join(
+                        f"{f} ILIKE '%' || :{key} || '%'" for f in token_fields
+                    ) + " THEN 1 ELSE 0 END)"
+                )
+
+            where_or = " OR ".join(clauses)
+            score_sql = " + ".join(score_terms)
             lex_rows = session.execute(
-                text("""
-                    SELECT id, name, description, industry, capabilities
+                text(f"""
+                    SELECT id, name, description, industry, capabilities, official,
+                           ({score_sql}) AS match_score
                     FROM templates
-                    WHERE status = :status
-                    AND (
-                        name ILIKE '%' || :query || '%'
-                        OR industry ILIKE '%' || :query || '%'
-                        OR description ILIKE '%' || :query || '%'
-                    )
+                    WHERE status = :status AND template_type != 'WORKSHOP' AND ({where_or})
+                    ORDER BY match_score DESC
                     LIMIT :limit
                 """),
-                {"query": query, "status": status, "limit": limit},
+                params,
             ).fetchall()
-            # Lexical baseline: 0.55 when blending with semantic (a title match is
-            # a strong signal), 0.5 when lexical is all we have (PGLite parity).
-            lex_sim = 0.55 if semantic_ok else 0.5
-            _add(lex_rows, lambda r: lex_sim)
+            # Map the discrete match score → a similarity band. Baseline 0.55 (a
+            # solid literal match should be able to out-rank a weak semantic hit)
+            # + a small per-match nudge so more-complete matches sort higher.
+            max_score = max((int(r.match_score) for r in lex_rows), default=1) or 1
+            _add(lex_rows, lambda r: 0.55 + 0.1 * (int(r.match_score) / max_score))
         except Exception as e:
             logger.debug(f"Lexical search failed: {e}")
             session.rollback()
 
         ranked = sorted(merged.values(), key=lambda d: d["similarity"], reverse=True)
+
+        # LLM re-rank of the TOP candidates. Cosine similarity alone is a poor
+        # confidence signal ("health care" legitimately matches the Healthcare
+        # template at only ~0.47), so a mini model re-orders the top-N by actual
+        # relevance to the query — trusting official templates a bit more — and
+        # drops clearly-irrelevant ones. Cached by normalized query (bounded).
+        # Best-effort: any failure falls back to the similarity order.
+        ranked = self._llm_rerank(query, ranked)
+
+        # `limit` was normalized to a positive cap at the top (never <= 0 here).
         return ranked[:limit]
+
+    # Top-N to re-rank + the in-memory query→ordered-ids cache (bounded).
+    _RERANK_TOP_N = 6
+    _RERANK_CACHE_MAX = 1000
+
+    def _llm_rerank(self, query: str, ranked: list[dict]) -> list[dict]:
+        """Re-order the top `_RERANK_TOP_N` candidates by LLM-judged relevance to
+        `query` (official templates weighted up), returning the full list with the
+        re-ranked head followed by the untouched tail. Cached per normalized
+        query. Never raises — on any issue returns `ranked` unchanged."""
+        if len(ranked) < 2:
+            return ranked
+        qkey = " ".join(query.lower().split())
+        if not qkey:
+            return ranked
+
+        cache = _RERANK_CACHE
+        cached_order = cache.get(qkey)
+        head = ranked[: self._RERANK_TOP_N]
+        tail = ranked[self._RERANK_TOP_N :]
+        by_id = {d["id"]: d for d in head}
+
+        if cached_order is None:
+            try:
+                cached_order = self._call_rerank_llm(query, head)
+            except Exception as e:  # noqa: BLE001 — best-effort; keep similarity order
+                logger.debug("template rerank LLM failed: %s", e)
+                cached_order = None
+            # Cache even a None/failed result briefly? No — only cache a real
+            # ordering, so a transient failure can retry next keystroke.
+            if cached_order is not None:
+                if len(cache) >= self._RERANK_CACHE_MAX:
+                    cache.pop(next(iter(cache)))  # drop oldest (FIFO-ish)
+                cache[qkey] = cached_order
+
+        if not cached_order:
+            return ranked
+
+        # Rebuild head from the LLM order (ids it kept, in its order); append any
+        # head ids it dropped (defensive — never lose a candidate), then the tail.
+        reordered = [by_id[i] for i in cached_order if i in by_id]
+        dropped = [d for d in head if d["id"] not in set(cached_order)]
+        return reordered + dropped + tail
+
+    def _call_rerank_llm(self, query: str, candidates: list[dict]) -> list[str] | None:
+        """Ask the mini model to re-order candidate ids by relevance. Returns a
+        list of ids (best first) or None if the response can't be parsed."""
+        lines = []
+        for c in candidates:
+            official = " [OFFICIAL]" if c.get("official") or False else ""
+            desc = (c.get("description") or "").replace("\n", " ")[:300]
+            lines.append(f'- id: {c["id"]}{official}\n  name: {c["name"]}\n  about: {desc}')
+        catalog = "\n".join(lines)
+        system_prompt = (
+            "You rank Databricks demo templates for a search box. Given the user's "
+            "query and a few candidate templates (name + description), return the "
+            "ids ordered from MOST to LEAST relevant to the query. Judge by meaning, "
+            "not keyword overlap (e.g. 'health care' matches a 'Healthcare' template). "
+            "Templates marked [OFFICIAL] are curated and trusted: strongly prefer "
+            "them — when an [OFFICIAL] template is a reasonable match for the query, "
+            "rank it above non-official ones, and only place a non-official template "
+            "first when it is a clearly better or more specific match. DROP ids that "
+            "are clearly irrelevant to the query. Reply with ONLY a JSON array of id "
+            'strings, e.g. ["id1","id2"].'
+        )
+        user_prompt = f'User query: "{query}"\n\nCandidates:\n{catalog}'
+        raw = self.llm.chat(
+            user_prompt, size=ModelSize.MINI, system_prompt=system_prompt, max_tokens=300
+        )
+        return _extract_id_list(raw)
 
     def list_templates(
         self,

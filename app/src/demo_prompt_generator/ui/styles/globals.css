@@ -171,6 +171,17 @@
   animation: flow-dot 2.6s ease-in-out infinite;
 }
 
+/* Left-to-right sweep — used behind the "Generating stories…" build button
+ * while story ideas are still streaming. The element starts at -translate-x-full
+ * and this sweeps it across and off the right edge, on a loop. */
+@keyframes shimmer-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.animate-shimmer-sweep {
+  animation: shimmer-sweep 1.6s ease-in-out infinite;
+}
+
 /* Rotating gradient ring for newly-deployed resource pills */
 @keyframes resource-shimmer {
   0%   { background-position: 0% 50%; }

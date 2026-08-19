@@ -1,0 +1,83 @@
+{
+  // Nimbus Growth Desk — app config (JSONC). Loaded by server/server.ts.
+  //
+  // ${VAR} / ${VAR:default} placeholders are substituted against process.env
+  // BEFORE JSON parsing, so catalog/schema/resource-IDs live in env (one
+  // source of truth), NOT as literals here — set them in `.env` (local dev +
+  // preview) or via the DAB (deployed; finalize_app.sh writes app.yaml's env).
+  //   - `${VAR}`           → empty string if unset
+  //   - `${VAR:default}`   → `default` if unset
+  // Empty values degrade gracefully; the app still boots.
+  //
+  // CUSTOMIZE per demo: branding, assistantScript, and data.tables names.
+
+  // ── Agent data backend: the `ask_data` tool. Config-driven MAS-OR-Genie.
+  //   Set ONE (via env). This is the WORKSHOP'S Build-1 choice — the trainee
+  //   wires either a Genie space (GENIE_SPACE_ID) or a Multi-Agent Supervisor
+  //   endpoint (MAS_ENDPOINT_NAME). The app registers whichever is set; if
+  //   BOTH are empty the agent has no ask_data tool (warned at boot).
+  //   The default Nimbus flow uses Genie ("ask why segments are sliding").
+  "masEndpointName": "${MAS_ENDPOINT_NAME:}",
+  "genieSpaceId":    "${GENIE_SPACE_ID:}",
+
+  // Agent LLM. Needs the Responses API (openai/v1/responses). databricks-gpt-5-4
+  // is the baseline; a newer GPT endpoint with /responses enabled works too.
+  // Non-Responses models (Claude etc.) 400 BAD_REQUEST.
+  "agentModel": "databricks-gpt-5-4",
+
+  // MLflow trace path. Empty → chat shows "Trace pending…". Auto-created at boot.
+  "mlflowExperimentId": "",
+  "agentMlflowExperimentPath": "${AGENT_MLFLOW_EXPERIMENT_PATH:}",
+
+  // Embedded AI/BI dashboard (UUID). The Nimbus growth dashboard.
+  // Empty → the /dashboard route + tile render inert.
+  "dashboardId": "${DASHBOARD_ID:}",
+
+  // Workspace resource IDs → deep-link URLs via /api/resources (PlatformDiagram
+  // on /platform). Empty id → tile renders inert.
+  "pipelineId":        "${PIPELINE_ID:}",
+  "warehouseId":       "${WAREHOUSE_ID:}",
+  "kaEndpointName":    "${KA_ENDPOINT_NAME:}",
+  "lakebaseProjectId": "${LAKEBASE_PROJECT_ID:}",
+  "appUrl":            "${APP_URL:}",
+  // The conversion recommender ML model (UC-registered). The trainee builds it in Build 2.
+  "mlModelName":       "${DEMO_CATALOG:ai_demo_gen}.${DEMO_SCHEMA:nimbus}.conversion_recommender",
+
+  // Delta source for boot-time Lakebase mirror (server/db/sync.ts). catalog +
+  // schema from env; the table NAMES are the Nimbus Gold tables. Keep
+  // client/src/shared/types.ts + Drizzle schema (server/db/schema.ts) in sync.
+  // actionRecommendations is OPTIONAL — the trainee builds that Gold table
+  // in the ML step, so sync tolerates it not existing yet.
+  "data": {
+    "catalog": "${DEMO_CATALOG:ai_demo_gen}",
+    "schema":  "${DEMO_SCHEMA:nimbus}",
+    "tables": {
+      "segmentPosition":       "gold_segment_position",
+      "openSliding":           "gold_open_sliding",
+      "actionRecommendations": "gold_action_recommendations",
+      "experiments":           "raw_experiments"
+    }
+  },
+
+  // Surfaces in dock header + page titles.
+  "branding": {
+    "appName": "Nimbus Growth Desk"
+  },
+
+  // Dock's "Suggested next" chip walks this list. Step N unlocks once the
+  // previous assistant message contains any triggerAfter[] substring.
+  // The Nimbus investigate → rank → approve flow.
+  "assistantScript": [
+    {
+      "prompt": "Why is SEG-0000214 sliding on conversion, and what should I ship?"
+    },
+    {
+      "prompt": "Rank the action. Use the model.",
+      "triggerAfter": ["slide", "conversion", "SEG-0000214", "feature", "ship"]
+    },
+    {
+      "prompt": "Yes — ship the proven variant.",
+      "triggerAfter": ["ship", "variant", "approve", "roll out"]
+    }
+  ]
+}

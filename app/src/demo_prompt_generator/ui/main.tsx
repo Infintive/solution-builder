@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import "@/styles/globals.css";
 import { routeTree } from "@/routeTree.gen";
+import { initSageRouteBridge } from "@/lib/sage-embed";
 
 import {
   RouterProvider,
@@ -38,6 +39,9 @@ declare module "@tanstack/react-router" {
     router: typeof router;
   }
 }
+
+// Mirror in-app navigation into Sage's URL when embedded (no-op standalone).
+initSageRouteBridge(router);
 
 const rootElement = document.getElementById("root")!;
 

@@ -72,7 +72,65 @@ export function AnnotationMenu({
           />
         </div>
       )}
+      {/* A box can carry a logo/icon in its title legend (sets `titleIcon`).
+          Same picker + flow as a logo annotation. When one is set, a trailing
+          remove button clears it. */}
+      {a.variant === "box" && (
+        <div className="flex items-center">
+          <div className="min-w-0 flex-1">
+            <Item
+              icon={<Shapes className="h-3.5 w-3.5" />}
+              label={a.titleIcon ? "Change logo…" : "Pick logo…"}
+              onClick={onPickLogo}
+            />
+          </div>
+          {a.titleIcon && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onAnno({ titleIcon: undefined }); }}
+              title="Remove logo"
+              className="mr-1 grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded text-muted-foreground hover:bg-muted hover:text-destructive"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
       {a.variant === "logo" && <Item icon={<Shapes className="h-3.5 w-3.5" />} label="Pick logo…" onClick={onPickLogo} />}
+      {/* Logo title (the caption label) + optional description (a muted 2nd line
+          under it). Setting the description shows it; clearing it hides it — no
+          separate toggle. Editable here OR by double-clicking the logo. */}
+      {a.variant === "logo" && (
+        <>
+          <div className="px-2 py-1.5">
+            <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Type className="h-3.5 w-3.5" /> Title
+            </div>
+            <input
+              type="text"
+              value={a.text ?? ""}
+              placeholder="Label…"
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => onAnno({ text: e.target.value })}
+              className="w-full rounded border border-border bg-background px-2 py-1 text-[11px] outline-none focus:border-primary"
+            />
+          </div>
+          <div className="px-2 py-1.5">
+            <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Type className="h-3.5 w-3.5" /> Description
+            </div>
+            <input
+              type="text"
+              value={a.desc ?? ""}
+              placeholder="Optional — a short line under the title"
+              onClick={(e) => e.stopPropagation()}
+              // Setting a desc shows it; clearing hides it (showDesc tracks non-empty).
+              onChange={(e) => onAnno({ desc: e.target.value, showDesc: !!e.target.value.trim() })}
+              className="w-full rounded border border-border bg-background px-2 py-1 text-[11px] outline-none focus:border-primary"
+            />
+          </div>
+        </>
+      )}
       {a.variant === "logo" && (() => {
         // Where the text label sits relative to the icon. Legacy side==right,
         // below==bottom; unset defaults to bottom.

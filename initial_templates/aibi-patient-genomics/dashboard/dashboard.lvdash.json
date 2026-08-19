@@ -143,7 +143,7 @@
             "name": "title",
             "multilineTextboxSpec": {
               "lines": [
-                "# OncoTarget-1 \u2014 it works\u2026 but not everywhere. *Where* should we use it?\n\nWe rolled out a new targeted therapy across a real 10,000-patient oncology cohort. Overall, treated patients survive better \u2014 but the benefit is **wildly uneven**: a near-miracle in some cancers, nothing in others, and in a couple it may even do harm. The chart below ranks every cancer by survival lift. The obvious follow-up: *what separates the responders from the rest?* (Answer on page 2 \u2014 and it's molecular.)"
+                "# OncoTarget-1 — it works… but not everywhere. *Where* should we use it?\n\nWe rolled out a new targeted therapy across a real 10,000-patient oncology cohort. Overall, treated patients survive better — but the benefit is **wildly uneven**: a near-miracle in some cancers, nothing in others, and in a couple it may even do harm. The chart below ranks every cancer by survival lift. The obvious follow-up: *what separates the responders from the rest?* (Answer on page 2 — and it's molecular.)"
               ]
             }
           },
@@ -237,10 +237,7 @@
                       "places": 1
                     }
                   },
-                  "formatTemplate": "{{ @formatted }}%",
-                  "color": {
-                    "default": "#077A9D"
-                  }
+                  "formatTemplate": "{{ @formatted }}%"
                 },
                 "period": {
                   "fieldName": "month"
@@ -295,10 +292,7 @@
                       "places": 1
                     }
                   },
-                  "formatTemplate": "{{ @formatted }}%",
-                  "color": {
-                    "default": "#FCA4A1"
-                  }
+                  "formatTemplate": "{{ @formatted }}%"
                 },
                 "period": {
                   "fieldName": "month"
@@ -349,10 +343,7 @@
                       "places": 1
                     }
                   },
-                  "formatTemplate": "+{{ @formatted }} pts",
-                  "color": {
-                    "default": "#00A972"
-                  }
+                  "formatTemplate": "+{{ @formatted }} pts"
                 }
               },
               "frame": {
@@ -436,7 +427,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Survival lift by cancer site \u2014 where OncoTarget-1 helps (green), does nothing (grey), or harms (red)"
+                "title": "Survival lift by cancer site — where OncoTarget-1 helps (green), does nothing (grey), or harms (red)"
               }
             }
           },
@@ -515,7 +506,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Gene-expression map (UMAP) \u2014 the responders share a molecular signature, not an organ"
+                "title": "Gene-expression map (UMAP) — the responders share a molecular signature, not an organ"
               }
             }
           },
@@ -590,7 +581,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Overall survival over time \u2014 treated vs standard of care (the average hides the unevenness above)"
+                "title": "Overall survival over time — treated vs standard of care (the average hides the unevenness above)"
               }
             }
           },
@@ -614,7 +605,7 @@
             "name": "d_title",
             "multilineTextboxSpec": {
               "lines": [
-                "# Who benefits most \u2014 the breast responder subtype\n\nDeep-dive into breast cancer. Patients split into a **responder molecular subtype** (a distinct gene-expression cluster) and the rest. In the responder subtype, OncoTarget-1 lifts 24-month survival from ~89% to ~99% \u2014 far more than in other breast patients. This is the kind of precision-oncology signal that turns a good drug into the *right* drug for the *right* patient."
+                "# Who benefits most — the breast responder subtype\n\nDeep-dive into breast cancer. Patients split into a **responder molecular subtype** (a distinct gene-expression cluster) and the rest. In the responder subtype, OncoTarget-1 lifts 24-month survival from ~89% to ~99% — far more than in other breast patients. This is the kind of precision-oncology signal that turns a good drug into the *right* drug for the *right* patient."
               ]
             }
           },
@@ -705,7 +696,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Responder-subtype survival over time \u2014 OncoTarget-1 holds near 99% while standard of care falls"
+                "title": "Responder-subtype survival over time — OncoTarget-1 holds near 99% while standard of care falls"
               }
             }
           },
@@ -780,7 +771,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Breast cancer gene-expression \u2014 the responder subtype is a distinct molecular cluster"
+                "title": "Breast cancer gene-expression — the responder subtype is a distinct molecular cluster"
               }
             }
           },
@@ -796,7 +787,7 @@
             "name": "d_step2",
             "multilineTextboxSpec": {
               "lines": [
-                "## 2. Responder subtype vs the rest of breast \u2014 and who the responders are"
+                "## 2. Responder subtype vs the rest of breast — and who the responders are"
               ]
             }
           },
@@ -874,7 +865,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Breast survival \u2014 responder subtype vs other (treated vs standard of care)"
+                "title": "Breast survival — responder subtype vs other (treated vs standard of care)"
               }
             }
           },
@@ -931,7 +922,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Responder subtype \u2014 patient mix"
+                "title": "Responder subtype — patient mix"
               }
             }
           },

@@ -38,10 +38,20 @@ SUPPORTED_EXTENSIONS = frozenset(
     }
 )
 
-# Tabular formats: only read this many data rows up-front. CSVs in the wild
-# are often 100k+ rows; we just need a representative slice for the LLM to
-# infer schema / domain.
-MAX_TABULAR_ROWS = 10
+# Tabular row cap. A CSV/XLSX can be EITHER a raw dataset dump (only a slice
+# matters — infer schema/domain) OR itself a specification: a data dictionary,
+# a field-by-field mapping, a requirements matrix where EVERY row is a column
+# definition the demo must honor. Cutting the latter is exactly the "you lost
+# my schema" failure — a 60-table dictionary is ~1,200 rows.
+#
+# So the row cap is deliberately NOT the binding limit. The real bounds are
+# already enforced elsewhere: the route's 10 MB raw-byte cap bounds memory (a
+# ≤10 MB CSV can't hold more than ~100k rows anyway), and extract_text's
+# `max_chars` (2M) bounds the returned context. This cap just backstops a
+# pathologically tall file; set it well above what a 10 MB CSV can contain so
+# that for any realistic schema the char cap governs — giving CSV the same
+# "survives intact" behavior as .md/.txt. Keep it >> rows-per-10MB.
+MAX_TABULAR_ROWS = 200_000
 
 
 def extract_text(

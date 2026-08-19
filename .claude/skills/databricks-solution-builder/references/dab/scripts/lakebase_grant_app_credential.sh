@@ -87,13 +87,31 @@ for r in json.load(sys.stdin):
         break
 "
 )"
-[[ -z "$SP_ROLE" ]] && {
-    echo "[grant] ERROR: no Postgres role for SP $APP_SP_UUID in $BRANCH_PATH." >&2
-    echo "[grant]   The role is created when the App connects to Lakebase the first time" >&2
-    echo "[grant]   (DAB postgres binding apply, or first connection from the App)." >&2
-    echo "[grant]   Verify with: databricks postgres list-roles $BRANCH_PATH" >&2
-    exit 1
-}
+# No role for this SP yet? Create it. Normally the role appears when the App
+# first connects to Lakebase (DAB binding apply / first connection), but on the
+# interactive redeploy path there's no binding to auto-provision it — and the
+# reassign step below NEEDS the new role to exist before it can transfer the
+# prior (deleted) app's schema ownership onto it. So create it here.
+# Note: role-id must match ^[a-z]([a-z0-9-]*)$, and the SP UUID starts with a
+# digit, so we prefix `sp-`. The `postgres_role` field stays the bare SP UUID
+# (that's what identifies the SP); `SP_ROLE` (used in the GRANTs) is the UUID too.
+if [[ -z "$SP_ROLE" ]]; then
+    echo "[grant] no Postgres role for SP $APP_SP_UUID yet — creating one"
+    if databricks postgres create-role "$BRANCH_PATH" \
+        --role-id "sp-$APP_SP_UUID" \
+        --json "{\"spec\": {\"identity_type\": \"SERVICE_PRINCIPAL\", \"postgres_role\": \"$APP_SP_UUID\", \"auth_method\": \"LAKEBASE_OAUTH_V1\"}}" \
+        ${PROFILE_FLAG[@]+"${PROFILE_FLAG[@]}"} >/dev/null 2>&1; then
+        SP_ROLE="$APP_SP_UUID"
+        echo "[grant]   created role sp-$APP_SP_UUID (postgres_role=$APP_SP_UUID)"
+    else
+        echo "[grant] ERROR: could not create a Postgres role for SP $APP_SP_UUID in $BRANCH_PATH." >&2
+        echo "[grant]   Create it manually, then re-run:" >&2
+        echo "[grant]     databricks postgres create-role $BRANCH_PATH --role-id sp-$APP_SP_UUID \\" >&2
+        echo "[grant]       --json '{\"spec\":{\"identity_type\":\"SERVICE_PRINCIPAL\",\"postgres_role\":\"$APP_SP_UUID\",\"auth_method\":\"LAKEBASE_OAUTH_V1\"}}'" >&2
+        echo "[grant]   Verify with: databricks postgres list-roles $BRANCH_PATH" >&2
+        exit 1
+    fi
+fi
 echo "[grant] SP role: $SP_ROLE"
 
 # Auth as the current Databricks user (the DB owner from setup) to run the

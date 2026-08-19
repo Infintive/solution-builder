@@ -153,9 +153,6 @@
                       "type": "max",
                       "places": 1
                     }
-                  },
-                  "color": {
-                    "value": "#4FB8D6"
                   }
                 },
                 "period": {
@@ -213,10 +210,7 @@
               "encodings": {
                 "value": {
                   "fieldName": "measure(Conversions)",
-                  "displayName": "Conversions",
-                  "color": {
-                    "value": "#4FB8D6"
-                  }
+                  "displayName": "Conversions"
                 },
                 "period": {
                   "fieldName": "monthly(Date)"
@@ -266,9 +260,6 @@
                       "type": "exact",
                       "places": 2
                     }
-                  },
-                  "color": {
-                    "value": "#4FB8D6"
                   }
                 },
                 "period": {
@@ -325,9 +316,6 @@
                       "type": "max",
                       "places": 1
                     }
-                  },
-                  "color": {
-                    "value": "#4FB8D6"
                   }
                 },
                 "period": {

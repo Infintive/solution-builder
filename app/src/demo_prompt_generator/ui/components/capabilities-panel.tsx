@@ -1,7 +1,7 @@
 /**
  * CapabilitiesPanel — the home-page picker, split into two tabs.
  *
- *   • "Simple Databricks demo" (default) — a curated baseline: synthetic
+ *   • "Simple solution" (default) — a curated baseline: synthetic
  *     data → dashboard + Genie + Unity Catalog. Optional opt-in for the
  *     Databricks App + Lakebase pair via one toggle. Everything else is
  *     hidden so first-time users get a fast path.
@@ -15,8 +15,16 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Zap, SlidersHorizontal, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { DATABRICKS_ICONS } from "@/components/databricks-icons";
 import { TIER_CONFIG, type TierType } from "@/lib/architecture-schema";
 import { CAPABILITY_META } from "@/lib/capabilities";
@@ -32,11 +40,13 @@ import { ProductSelector } from "@/components/product-selector";
 //   • APP_BUNDLE — optional add-on toggled by the app/lakebase switch.
 const SIMPLE_VISIBLE_TILES = [
   "synthetic-data-gen",
-  "unity-catalog",
   "aibi-dashboards",
   "genie",
 ] as const;
 const SIMPLE_TALK_TRACK = [
+  // Unity Catalog is part of every demo but no longer rendered as a tile (to
+  // save horizontal space) — it stays in the baseline via the talk track.
+  "unity-catalog",
   "lakeflow-connect",
   "genie-one",
   "genie-code",
@@ -98,6 +108,14 @@ interface Props {
   /** Hide the "add a custom app + Lakebase backend" toggle — set in the Genie
    *  Code workshop, where apps + Lakebase aren't available. */
   hideAppBundle?: boolean;
+  /** Notified whenever the active tab changes (and once on mount with the
+   *  initial tab). Lets the home page drive its own UX off Simple vs Custom
+   *  — e.g. a bigger free-type input + no story suggestions in Custom. */
+  onTabChange?: (tab: "simple" | "custom") => void;
+  /** Horizontal alignment of the tab header + summary. "center" (default) for
+   *  the standalone layout; "left" when the panel sits in a row beside the
+   *  Build button so both hug their respective edges. */
+  align?: "center" | "left";
 }
 
 // Build the explicit-status map for Simple mode: every baseline id (+ app
@@ -132,8 +150,95 @@ export function CapabilitiesPanel({
   explicitSelections = new Map(),
   initialTab = "simple",
   hideAppBundle = false,
+  onTabChange,
+  align = "center",
 }: Props) {
   const [tab, setTab] = useState<"simple" | "custom">(initialTab);
+  // Custom picker is a lightweight hover-popover that spans out from the Custom
+  // button. Opens on hover (or on selecting the Custom tab), and shrinks away
+  // shortly after the pointer leaves. A small close delay lets the pointer
+  // travel from the button down into the popover without it collapsing.
+  const [customOpen, setCustomOpen] = useState(initialTab === "custom");
+  // The popover renders in a PORTAL (so the card's overflow-hidden can't clip
+  // it) and is positioned from the anchor's bounding rect.
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [popoverPos, setPopoverPos] = useState<{ left: number; top: number } | null>(null);
+  const positionPopover = useCallback(() => {
+    const el = anchorRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const margin = 16;
+    // Wide enough to show all four product columns; capped to the viewport.
+    const width = Math.min(window.innerWidth - margin * 2, 60 * 16);
+    const half = width / 2;
+    // Horizontally: center on the anchor, clamped so neither edge clips.
+    const left = Math.max(
+      margin + half,
+      Math.min(r.left + r.width / 2, window.innerWidth - margin - half),
+    );
+    // Vertically: prefer just below the anchor, but if the popover would run
+    // off the bottom, shift it UP so the whole thing stays on-screen (no
+    // scrolling to reach it). Measure the live height when we have it.
+    const h = popoverRef.current?.offsetHeight ?? 0;
+    let top = r.bottom + 8;
+    if (h > 0 && top + h > window.innerHeight - margin) {
+      top = Math.max(margin, window.innerHeight - margin - h);
+    }
+    setPopoverPos({ left, top });
+  }, []);
+  // handleTabChange is defined below; a ref lets openCustomPicker call it
+  // without a temporal-dead-zone / ordering problem.
+  const handleTabChangeRef = useRef<(t: "simple" | "custom") => void>(() => {});
+  // Open the picker (used by the Custom-summary "Edit" button): switch to the
+  // custom tab if needed and show the popover.
+  const openCustomPicker = useCallback(() => {
+    positionPopover();
+    if (tab !== "custom") handleTabChangeRef.current("custom");
+    setCustomOpen(true);
+  }, [positionPopover, tab]);
+  // Keep the popover glued to the anchor while it's open (scroll / resize).
+  // Also re-run once right after it mounts so the vertical clamp can use the
+  // popover's real height (first pass runs before it has one).
+  useEffect(() => {
+    if (!customOpen) return;
+    positionPopover();
+    const raf = requestAnimationFrame(() => positionPopover());
+    const onMove = () => positionPopover();
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, [customOpen, positionPopover]);
+  // Close the popover on outside-click / Escape (it's not a modal, so there's
+  // no backdrop to catch these).
+  useEffect(() => {
+    if (!customOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (popoverRef.current?.contains(t) || anchorRef.current?.contains(t)) return;
+      setCustomOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCustomOpen(false);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [customOpen]);
+
+  // Tell the parent the initial tab once on mount (so its input size / suggest
+  // gating starts in the right mode).
+  useEffect(() => {
+    onTabChange?.(initialTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Per-tab memory. Each entry stores (selectedProducts, explicitSelections)
   // for that tab so the user can switch back and forth without losing
@@ -192,14 +297,19 @@ export function CapabilitiesPanel({
           for (const id of seedSelected) seedExplicit.set(id, "selected");
           onReplaceSelection(seedSelected, seedExplicit);
         }
+        // Open the picker modal when entering Custom.
+        setCustomOpen(true);
       }
       // For "simple" entry the lock effect above (deps: [tab]) takes
       // over once we flip the state, so we don't need a manual restore
       // here. The lock always reconstructs from SIMPLE_BASELINE + appOn.
       setTab(nextTab);
+      onTabChange?.(nextTab);
     },
-    [tab, selectedProducts, explicitSelections, onReplaceSelection],
+    [tab, selectedProducts, explicitSelections, onReplaceSelection, onTabChange],
   );
+  // Keep the ref current so openCustomPicker (defined above) can call it.
+  handleTabChangeRef.current = handleTabChange;
 
   // App-bundle toggle in Simple — just re-runs the lock with the new
   // app state and lets onReplaceSelection take care of the rest.
@@ -217,53 +327,103 @@ export function CapabilitiesPanel({
     <div
       className={cn(
         "grid transition-all duration-300 ease-in-out overflow-hidden",
-        expanded ? "grid-rows-[1fr] opacity-100 mt-3" : "grid-rows-[0fr] opacity-0 mt-0",
+        expanded ? "grid-rows-[1fr] opacity-100 mt-2" : "grid-rows-[0fr] opacity-0 mt-0",
       )}
     >
       <div className="overflow-hidden">
-        <div className="border-t border-border/50 pt-4">
+        <div>
           <Tabs value={tab} onValueChange={(v) => handleTabChange(v as "simple" | "custom")}>
-            <div className="flex flex-col items-center text-center gap-3 mb-4">
-              <TabsList>
-                <TabsTrigger value="simple">Simple Databricks demo</TabsTrigger>
-                <TabsTrigger value="custom">Custom solution</TabsTrigger>
-              </TabsList>
+            <div
+              className={cn(
+                "flex flex-col mb-2.5",
+                align === "left" ? "items-start text-left" : "items-center text-center",
+              )}
+            >
+              {/* Anchor for the Custom picker popover — clicking the Custom
+                  tab opens it (see handleTabChange); it's positioned from this
+                  element's rect. */}
+              <div ref={anchorRef}>
+                <TabsList>
+                  <TabsTrigger value="simple">Simple solution</TabsTrigger>
+                  {/* onClick (in addition to the tab's onValueChange) so that
+                      re-clicking an already-active Custom tab REOPENS the
+                      popover after it was dismissed. */}
+                  <TabsTrigger value="custom" onClick={openCustomPicker}>
+                    Custom solution
+                  </TabsTrigger>
+                </TabsList>
+              </div>
             </div>
 
-            {/* SIMPLE — curated baseline + optional app/lakebase pair */}
-            <TabsContent value="simple" className="mt-0">
-              <div className="flex flex-col items-center gap-4">
-                <BaselineRow isLoading={isLoading} />
-
-                {!hideAppBundle && (
-                  <AppBundleToggle
-                    on={appBundleOn}
-                    onToggle={toggleAppBundle}
-                    disabled={isLoading}
-                  />
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => handleTabChange("custom")}
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer underline underline-offset-2 decoration-muted-foreground/40 hover:decoration-foreground"
+            {/* Picker popover that spans out from the Custom button. Portaled
+                to <body> so the card's overflow-hidden can't clip it. Opens on
+                CLICKING the Custom tab; STAYS open while the user toggles
+                products — only the ✕ button, an outside-click, or Esc close it.
+                Not a modal — no backdrop, no page lock. */}
+            {popoverPos &&
+              createPortal(
+                <div
+                  ref={popoverRef}
+                  style={{
+                    position: "fixed",
+                    left: popoverPos.left,
+                    top: popoverPos.top,
+                    transform: "translateX(-50%)",
+                    maxHeight: "calc(100vh - 2rem)",
+                  }}
+                  className={cn(
+                    "z-50 w-[min(calc(100vw-2rem),60rem)] origin-top overflow-y-auto rounded-xl border border-border bg-popover p-4 shadow-xl transition-all duration-200 ease-out text-left",
+                    customOpen
+                      ? "scale-100 opacity-100"
+                      : "pointer-events-none scale-95 opacity-0",
+                  )}
                 >
-                  Need more control? Switch to Custom solution
-                </button>
-              </div>
+                  {/* Close (✕) — the popover stays open through product toggles,
+                      so an explicit close affordance matters. */}
+                  <button
+                    type="button"
+                    onClick={() => setCustomOpen(false)}
+                    aria-label="Close"
+                    className="absolute right-3 top-3 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground cursor-pointer"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                  <ProductSelector
+                    capabilities={capabilities}
+                    selectedProducts={selectedProducts}
+                    onToggleProduct={onToggleProduct}
+                    expanded={true}
+                    isLoading={isLoading}
+                    explicitSelections={explicitSelections}
+                  />
+                </div>,
+                document.body,
+              )}
+
+            {/* SIMPLE — curated baseline. Collapsed to a one-line summary by
+                default (the baseline is predictable); the optional app/lakebase
+                pair is a compact inline chip when expanded. */}
+            <TabsContent value="simple" className="mt-0">
+              <SimpleSummary
+                isLoading={isLoading}
+                align={align}
+                appBundle={
+                  hideAppBundle
+                    ? undefined
+                    : { on: appBundleOn, onToggle: toggleAppBundle, disabled: isLoading }
+                }
+              />
             </TabsContent>
 
-            {/* CUSTOM — the original granular picker */}
+            {/* CUSTOM — a compact summary of the current selection; hover the
+                Custom button (above) to expand the picker popover. */}
             <TabsContent value="custom" className="mt-0">
-              <ProductSelector
+              <CustomSummary
+                isLoading={isLoading}
+                align={align}
                 capabilities={capabilities}
                 selectedProducts={selectedProducts}
-                onToggleProduct={onToggleProduct}
-                // `expanded` is now driven by the tab framework; force-true
-                // here so the inner selector always shows its content.
-                expanded={true}
-                isLoading={isLoading}
-                explicitSelections={explicitSelections}
+                onEdit={openCustomPicker}
               />
             </TabsContent>
           </Tabs>
@@ -277,136 +437,125 @@ export function CapabilitiesPanel({
 // Simple-view widgets
 // ---------------------------------------------------------------------------
 
-function BaselineRow({ isLoading }: { isLoading: boolean }) {
+// One-line Simple baseline: "Included: Synthetic Data · AI/BI Dashboard · Genie
+// Agent" on the left, and a compact toggle on the right to add the App +
+// Lakebase pair. When the app is on, a small note flags the longer build.
+function SimpleSummary({
+  isLoading,
+  appBundle,
+  align = "center",
+}: {
+  isLoading: boolean;
+  appBundle?: { on: boolean; onToggle: () => void; disabled?: boolean };
+  align?: "center" | "left";
+}) {
+  const names = SIMPLE_VISIBLE_TILES.map(
+    (id) => CAPABILITY_META[id]?.display ?? id,
+  );
+  const on = !!appBundle?.on;
   return (
     <div
       className={cn(
-        "flex flex-wrap items-center justify-center gap-2 transition-opacity",
+        "flex w-fit max-w-2xl flex-col gap-1 rounded-lg border border-border/50 bg-muted/20 px-4 py-2",
+        align === "center" && "mx-auto",
         isLoading && "opacity-60",
       )}
     >
-      {SIMPLE_VISIBLE_TILES.map((id, i) => (
-        <div key={id} className="flex items-center gap-2">
-          <BaselineTile id={id} />
-          {i < SIMPLE_VISIBLE_TILES.length - 1 && (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span className="text-xs text-muted-foreground">
+          <span className="font-semibold text-foreground">Included:</span>{" "}
+          {names.join(" · ")}
+        </span>
+        {appBundle && (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={on}
+            aria-label="Add a custom app + Lakebase backend"
+            onClick={appBundle.onToggle}
+            disabled={appBundle.disabled}
+            className={cn(
+              "inline-flex shrink-0 items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed",
+              on
+                ? "border-primary/50 bg-primary/10 text-primary"
+                : "border-primary/40 bg-primary/5 text-primary/90 hover:bg-primary/10 hover:border-primary/60",
+            )}
+          >
+            {on ? "App + Lakebase" : "+ Add app"}
             <span
-              className="text-muted-foreground/40 text-xs select-none"
-              aria-hidden
+              className={cn(
+                "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors",
+                on ? "bg-primary" : "bg-muted-foreground/40",
+              )}
             >
-              →
+              <span
+                className={cn(
+                  "inline-block h-3 w-3 transform rounded-full bg-background shadow transition-transform",
+                  on ? "translate-x-[14px]" : "translate-x-[2px]",
+                )}
+              />
             </span>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function BaselineTile({ id }: { id: string }) {
-  const meta = CAPABILITY_META[id];
-  const Icon = meta ? DATABRICKS_ICONS[meta.icon] : null;
-  const tier = CAPABILITY_TIER[id] ?? "ai";
-  const cfg = TIER_CONFIG[tier];
-  return (
-    <div
-      className={cn(
-        "inline-flex items-center gap-2 px-3 py-2 rounded-xl border",
-        cfg.bg,
-        cfg.border,
-      )}
-      title={meta?.display ?? id}
-    >
-      <div
-        className={cn(
-          "shrink-0 flex items-center justify-center h-7 w-7 rounded-md border",
-          cfg.bg,
-          cfg.border,
+          </button>
         )}
-      >
-        {Icon ? <Icon className={cn("h-4 w-4", cfg.color)} /> : null}
       </div>
-      <span className="text-[12.5px] font-medium text-foreground">
-        {meta?.display ?? id}
-      </span>
+      {/* "Takes longer" note — inside the box, under the Included line. */}
+      {appBundle && on && (
+        <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+          <Zap className="mt-0.5 h-3 w-3 shrink-0 text-primary/60" />
+          Adding an app + Lakebase backend makes the build take longer.
+        </p>
+      )}
     </div>
   );
 }
 
-function AppBundleToggle({
-  on,
-  onToggle,
-  disabled,
+// Compact Custom-tab summary shown when the picker modal is closed: the current
+// selection (names, or a count if long) + an "Edit" button that reopens the
+// modal. Mirrors SimpleSummary's box so the two tabs read consistently.
+function CustomSummary({
+  isLoading,
+  align = "center",
+  capabilities,
+  selectedProducts,
+  onEdit,
 }: {
-  on: boolean;
-  onToggle: () => void;
-  disabled?: boolean;
+  isLoading: boolean;
+  align?: "center" | "left";
+  capabilities: Capability[];
+  selectedProducts: Set<string>;
+  onEdit: () => void;
 }) {
-  const appMeta = CAPABILITY_META["databricks-apps"];
-  const lakebaseMeta = CAPABILITY_META["lakebase"];
-  const AppIcon = appMeta ? DATABRICKS_ICONS[appMeta.icon] : null;
-  const LakeIcon = lakebaseMeta ? DATABRICKS_ICONS[lakebaseMeta.icon] : null;
-  const cfg = TIER_CONFIG[CAPABILITY_TIER["databricks-apps"] ?? "interface"];
-
+  // Names of the selected capabilities, in the catalog's order, skipping the
+  // hidden talk-track-only slugs so the summary matches what's on the tiles.
+  const selectedNames = capabilities
+    .filter((c) => selectedProducts.has(c.id))
+    .map((c) => CAPABILITY_META[c.id]?.display ?? c.id);
+  const count = selectedNames.length;
+  const label =
+    count === 0
+      ? "No capabilities selected yet"
+      : count <= 4
+        ? selectedNames.join(" · ")
+        : `${selectedNames.slice(0, 3).join(" · ")} +${count - 3} more`;
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-4 w-full max-w-xl rounded-xl border px-4 py-3 transition-colors",
-        on
-          ? cn(cfg.bg, cfg.border)
-          : "bg-muted/20 border-border/50 hover:border-primary/30",
+        "flex w-fit max-w-2xl items-center gap-3 rounded-lg border border-border/50 bg-muted/20 px-4 py-2",
+        align === "center" && "mx-auto",
+        isLoading && "opacity-60",
       )}
     >
-      <div className="flex items-center gap-3 min-w-0">
-        <div
-          className={cn(
-            "shrink-0 flex items-center gap-0.5 px-1 h-8 rounded-md border",
-            on ? cn(cfg.bg, cfg.border) : "bg-muted/40 border-border/40",
-          )}
-        >
-          {AppIcon && (
-            <AppIcon
-              className={cn(
-                "h-4 w-4",
-                on ? cfg.color : "text-muted-foreground/60",
-              )}
-            />
-          )}
-          {LakeIcon && (
-            <LakeIcon
-              className={cn(
-                "h-4 w-4",
-                on ? cfg.color : "text-muted-foreground/60",
-              )}
-            />
-          )}
-        </div>
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-foreground leading-tight">
-            Add a custom app + Lakebase backend
-          </p>
-          <p className="text-[11.5px] text-muted-foreground mt-0.5 leading-snug">
-            Ships a Databricks App with a Postgres data layer — for hands-on,
-            interactive demos. Adds a few minutes to the build.
-          </p>
-        </div>
-      </div>
+      <span className="text-xs text-muted-foreground">
+        <span className="font-semibold text-foreground">Selected:</span> {label}
+      </span>
       <button
         type="button"
-        role="switch"
-        aria-checked={on}
-        onClick={onToggle}
-        disabled={disabled}
-        className={cn(
-          "relative shrink-0 inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed",
-          on ? "bg-primary" : "bg-muted-foreground/30",
-        )}
+        onClick={onEdit}
+        disabled={isLoading}
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-primary/40 bg-primary/5 px-2.5 py-1 text-xs font-semibold text-primary/90 transition-colors hover:bg-primary/10 hover:border-primary/60 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
       >
-        <span
-          className={cn(
-            "inline-block h-5 w-5 transform rounded-full bg-background shadow transition-transform",
-            on ? "translate-x-[22px]" : "translate-x-[2px]",
-          )}
-        />
+        <SlidersHorizontal className="h-3 w-3" />
+        Edit
       </button>
     </div>
   );

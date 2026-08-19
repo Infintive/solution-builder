@@ -40,7 +40,7 @@ try:
     spark  # noqa: F821
 except NameError:
     from databricks.connect import DatabricksSession
-    spark = DatabricksSession.builder.serverless(True).getOrCreate()
+    spark = DatabricksSession.builder.profile(os.environ.get("DATABRICKS_CONFIG_PROFILE", "DEFAULT")).serverless(True).getOrCreate()
 
 # COMMAND ----------
 

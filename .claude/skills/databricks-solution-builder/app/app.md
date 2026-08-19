@@ -275,9 +275,12 @@ The app's startup script validates required env vars and fails loudly if any are
 
 ### Step 5: Validate
 
+**"Done" means the app is a working, fully-rewritten demo — not that it boots.** A backend-only rewrite or a stubbed UI boots fine, so booting alone proves nothing.
+
 Static checks first:
 
-- `npm run build` succeeds
+- **Type-check with ZERO errors** — run the script that actually compiles server + client. `npm run build` here is a deliberate no-op; use `npm run typecheck` (or `build:source`). Stubbed/placeholder components that don't compile fail this.
+- **No leftover template identity** — grep the app (`client/`, `server/`, `config/`) for the template's example domain/brand + example table/entity names. Zero hits.
 - `config/app.json` resource IDs match `resources.json`
 - `data.tables` names match pipeline's actual Delta table names
 - Agent tools reference correct Lakebase schema columns
@@ -290,15 +293,14 @@ Run it yourself (you know how to background a process, poll a port, and tail a l
 - **Redirect logs to a per-project path**, e.g. `/tmp/<project-id>/app-smoke.log` — NOT a shared `/tmp/app-smoke.log`, or two concurrent demo builds clobber each other.
 - **Wait up to ~180s.** Cold boot does a lot before it listens: `npm ci`, `predev` (sync + typegen + `db:generate`), tsx compile, `runMigrations`, and the Delta→Lakebase sync. Don't kill early.
 - **Watch the log while waiting** — surface a fatal error (uncaught exception, missing module, `relation … does not exist`, invalid token, `EADDRINUSE`, migration failure) as soon as it appears instead of sitting blind for 3 minutes.
-- Success = the port accepts a connection. Crash = the process exited. A 180s no-listen with the process still alive is usually just a slow `npm ci`/sync — dump the log and investigate, don't assume failure.
+- **The port opening is the START of validation, not the end.** A clean listen only means the process didn't crash — a stubbed or backend-only app opens the port too. Once it's listening, actually exercise it (below). Process exited = crash. A 180s no-listen with the process still alive is usually just a slow `npm ci`/sync — dump the log and investigate, don't assume failure.
 
-Then:
+Then verify it actually WORKS (via the LOG + API only — do NOT open a browser or launch chromium; UI rendering is the user's job in the App tab):
 
-- Review the log for any errors. If the app crashed or logged fatal errors, fix them before reporting the build complete. Common issues: missing `DATABRICKS_HOST`, wrong catalog/schema, Lakebase endpoint not reachable, agent tool referencing a table column that doesn't exist yet.
-- Test the main endpoints (some get/create), make sure you test the chatbot / assistant endpoints as it's often having issue. 
-If you see errors, check the logs and fix the errors accordingly, and restart the app until it's working. The app should be functional once you finish
+- **The boot log is clean of data-layer errors.** The app can serve a page while every data query silently fails (missing/empty table, wrong column, type mismatch) — those errors scroll by in the log but don't stop the boot. Require **zero** data/query errors in the log, not just "no crash." A `TABLE_OR_VIEW_NOT_FOUND`/missing-column/query failure means an upstream table isn't ready or a query is wrong — fix it.
+- **Curl the app's data + chat endpoints and assert real rows.** Hit at least one route that reads the demo's data (a list/analytics endpoint) and confirm it returns **rows**, not `[]` or an error; test the chat/assistant endpoint (most failure-prone). A 200 with an empty body is a failure. Common causes: wrong catalog/schema, an unpopulated table, an agent tool referencing a missing column, Lakebase unreachable.
 
-Fix any error and loop until the app starts properly.
+Fix any error and loop until the app genuinely works — type-checks clean, boots with no data-layer errors, and its data endpoints return real rows. "It started" is not "it works."
 
 **Don't leave the app running.** From this point on, the **App** tab in the Demo Prompt Generator UI owns the process lifecycle — it spawns, supervises, proxies, and stops on idle / explicit Stop. A leftover smoke-test process would be untracked and could block the UI's own port. Verify with `lsof -iTCP:$PORT -sTCP:LISTEN` before reporting done.
 

@@ -45,9 +45,18 @@ MAX_TOTAL_BYTES = 50 * 1024 * 1024  # 50 MB
 # not the home-page context channel.
 MAX_FILES_PER_REQUEST = 5
 
-# Per-file extracted-char cap (≈30 KB of UTF-8). The frontend joins the
-# extractions and re-caps the total at ~50 KB before sending to suggest.
-MAX_CHARS_PER_FILE = 30_000
+# Per-file extracted-char cap. This governs what lands on disk as the
+# project's context (context/uploads/<name>.extracted.md) — i.e. what the
+# BUILD AGENT reads. It must be generous: a long, well-thought-out
+# specification (a multi-page PRD, a design doc) has to survive intake
+# INTACT — losing its tail is exactly the "solution builder dumbs my spec
+# down" failure. 2M chars ≈ hundreds of pages of prose, still comfortably
+# inside the agent's context window and bounded by the 10 MB raw-byte cap
+# above. The cheap home-page *suggest* LLM is protected separately: the
+# frontend re-caps the joined context at ~50 KB (SUGGEST_CONTEXT_MAX)
+# before sending it for idea generation, so raising this does NOT bloat
+# that call.
+MAX_CHARS_PER_FILE = 2_000_000
 
 
 @router.post(

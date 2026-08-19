@@ -28,6 +28,76 @@ from .projects import (
 
 router = create_router()
 
+# --- Yjs binary framing (client-authoritative CRDT relay) -------------------
+# The Yjs client wraps every frame as: writeVarUint(messageType) + payload.
+#   MESSAGE_SYNC(0)      → y-protocols/sync (sub-type: 0=Step1, 1=Step2, 2=Update)
+#   MESSAGE_AWARENESS(1) → y-protocols/awareness update
+#   MESSAGE_PRESENCE(3)  → our control channel (hello/writer/synced/compact) JSON
+#   MESSAGE_COMPACT(4)   → a writer's full-state snapshot: varuint(4) + a raw sync
+#                          Update payload that REPLACES the room's log (log bound)
+# The server is a dumb relay: it never decodes the CRDT payload, only the leading
+# varint(s) to tell a sync UPDATE (log + relay) from the Step1/2 handshake.
+MSG_SYNC = 0
+MSG_AWARENESS = 1
+MSG_PRESENCE = 3
+MSG_COMPACT = 4
+SYNC_UPDATE = 2  # sync sub-type that mutates the doc (Step1/Step2 are handshake)
+
+
+def _read_varuint(buf: bytes, pos: int) -> tuple[int, int]:
+    """Decode a lib0 varuint at `pos`. Returns (value, next_pos)."""
+    num = 0
+    shift = 0
+    while pos < len(buf):
+        b = buf[pos]
+        pos += 1
+        num |= (b & 0x7F) << shift
+        if b < 0x80:
+            break
+        shift += 7
+    return num, pos
+
+
+def _write_varuint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def _presence_frame(payload: dict) -> bytes:
+    """Wrap a JSON control message as a MESSAGE_PRESENCE binary frame:
+    varuint(3) + varuint(len) + utf8(json) — matching the client's decoder."""
+    body = json.dumps(payload).encode("utf-8")
+    return _write_varuint(MSG_PRESENCE) + _write_varuint(len(body)) + body
+
+
+def _is_sync_update(buf: bytes) -> bool:
+    """True iff a MESSAGE_SYNC frame carries a doc UPDATE (sub-type 2), i.e. an
+    actual edit to log + relay, vs a Step1/Step2 handshake (peer↔server only)."""
+    try:
+        mtype, pos = _read_varuint(buf, 0)
+        if mtype != MSG_SYNC:
+            return False
+        sub, _ = _read_varuint(buf, pos)
+        return sub == SYNC_UPDATE
+    except Exception:
+        return False
+
+
+def _frame_message_type(buf: bytes) -> int:
+    try:
+        mtype, _ = _read_varuint(buf, 0)
+        return mtype
+    except Exception:
+        return -1
+
+
 # Idle window per receive before the server probes a silent socket with a ping.
 # The client pings every ~20s, so a live tab always beats this.
 IDLE_PING_S = 30.0
@@ -88,22 +158,25 @@ async def collab_ws(ws: WebSocket, project_id: str) -> None:
     hub = get_collab_hub()
     member = await hub.join(project_id, ws, email=email, name=name, role=role)
 
-    # Late-join consistency: hand the newcomer the current document + who they
-    # are + who the writer is, so they render in sync before any op arrives.
+    # Late-join consistency (all binary — the Yjs client reads control messages
+    # only on binary MESSAGE_PRESENCE frames): tell the newcomer who they are + who
+    # the writer is, replay the room's accumulated Yjs update log so their Y.Doc
+    # converges, then send a `synced` frame. A DUMB RELAY has no SyncStep2 from a
+    # peer, so `synced` is the explicit "initial state has arrived" signal (an
+    # empty log for a cold room → the client seeds the doc from architecture.md).
+    who = {"connId": member.conn_id, "email": email, "name": name,
+           "role": role, "color": member.color}
     content = _read_architecture(project_id)
     try:
-        await ws.send_text(json.dumps({
-            "type": "hello",
-            "you": {"connId": member.conn_id, "email": email, "name": name,
-                    "role": role, "color": member.color},
-        }))
+        await ws.send_bytes(_presence_frame({"type": "hello", "you": who}))
+        await ws.send_bytes(_presence_frame({"type": "writer", "connId": hub.writer_of(project_id)}))
+        for upd in hub.yjs_replay_log(project_id):
+            await ws.send_bytes(upd)
+        await ws.send_bytes(_presence_frame({"type": "synced"}))
         if content is not None:
             # Seed the room's baseline hash so a later agent write is detected as
             # external (only if not already set by another member / a save).
             hub.note_baseline(project_id, content)
-            await ws.send_text(json.dumps({
-                "type": "snapshot", "source": "init", "content": content,
-            }))
     except Exception:
         await hub.leave(project_id, member.conn_id)
         return
@@ -120,29 +193,84 @@ async def collab_ws(ws: WebSocket, project_id: str) -> None:
         # would otherwise never error. A ping probe is still sent on each timeout
         # (a send failure reaps immediately).
         missed = 0
+        last_sweep = 0.0
+        STALE_S = IDLE_PING_S * MAX_MISSED   # a member silent this long is a ghost
+        SWEEP_EVERY_S = IDLE_PING_S          # throttle the room sweep
+
+        async def maybe_sweep() -> None:
+            """Reap stale members (incl. a ghost WRITER) — throttled, on ANY tick.
+            Runs from BOTH the inbound and timeout paths so a room where everyone
+            is actively pinging (never times out) still self-heals a ghost writer."""
+            nonlocal last_sweep
+            now_m = asyncio.get_event_loop().time()
+            if now_m - last_sweep < SWEEP_EVERY_S:
+                return
+            last_sweep = now_m
+            try:
+                await hub.reap_stale(project_id, STALE_S)
+            except Exception:
+                pass
+
         while True:
             try:
-                raw = await asyncio.wait_for(ws.receive_text(), timeout=IDLE_PING_S)
+                # receive() yields either a TEXT frame (legacy JSON ops + ping) or
+                # a BINARY frame (Yjs sync/awareness). One endpoint, both transports.
+                event = await asyncio.wait_for(ws.receive(), timeout=IDLE_PING_S)
                 missed = 0  # any inbound message (incl. the client's ping) = alive
+                hub.touch(project_id, member.conn_id)  # stamp liveness
+                await maybe_sweep()
             except asyncio.TimeoutError:
                 missed += 1
                 if missed >= MAX_MISSED:
                     break  # silent too long → ghost → finally reaps it
+                await maybe_sweep()
                 try:
                     await ws.send_text('{"type":"ping"}')
                     continue
                 except Exception:
                     break  # peer gone → finally reaps it
+
+            if event.get("type") == "websocket.disconnect":
+                break
+
+            # --- BINARY frame → Yjs relay (the diagram transport) --------------
+            data = event.get("bytes")
+            if data is not None:
+                mt = _frame_message_type(data)
+                if mt == MSG_SYNC:
+                    # A doc UPDATE (sub-type 2) mutates the shared doc → log +
+                    # relay to peers. Step1/Step2 handshake frames are just relayed
+                    # (not logged — they're not doc content).
+                    await hub.relay_yjs(project_id, member, data, _is_sync_update(data))
+                elif mt == MSG_AWARENESS:
+                    await hub.relay_yjs(project_id, member, data, is_sync_update=False)
+                elif mt == MSG_COMPACT:
+                    # Writer's full-state snapshot (response to a `compact` request):
+                    # replace the whole replay log with it + relay to peers. The
+                    # payload after the tag is a normal sync Update frame, so a peer
+                    # / late joiner applies it exactly like any other update.
+                    await hub.compact_yjs_log(project_id, member, data[1:])
+                # MSG_PRESENCE / unknown from a client: ignored (server-authored).
+                continue
+
+            # --- TEXT frame → the ping/pong liveness channel -------------------
+            raw = event.get("text")
+            if raw is None:
+                continue
             try:
                 msg = json.loads(raw)
             except (ValueError, TypeError):
                 continue
-            mtype = msg.get("type")
-            if mtype == "cursor":
-                await hub.on_cursor(project_id, member, msg)
-            elif mtype == "op":
-                await hub.on_op(project_id, member, msg)
-            # "ping"/unknown types are ignored (liveness + forward-compatible).
+            if msg.get("type") == "ping":
+                # Reply so the client can VERIFY the socket is truly alive end-to-
+                # end (a half-open TCP lets the client's send succeed into the void
+                # but never round-trips). No pong within the client's window →
+                # client declares the socket dead in seconds, not minutes.
+                try:
+                    await ws.send_text('{"type":"pong"}')
+                except Exception:
+                    break  # peer gone → finally reaps it
+            # unknown types are ignored (forward-compatible).
     except WebSocketDisconnect:
         pass
     except Exception as e:
