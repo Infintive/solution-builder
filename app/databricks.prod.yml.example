@@ -37,16 +37,19 @@ targets:
       # anthropic_llm_endpoint + anthropic_base_path MUST match (they name an
       # endpoint AND the shim that resolves it):
       #   serving-endpoints/anthropic → FMAPI default Anthropic bridge. Use a
-      #       built-in name, e.g. `databricks-claude-sonnet-4-8`.
+      #       built-in name, e.g. `databricks-claude-sonnet-5`.
       #   ai-gateway/anthropic        → AI Gateway Anthropic shim. Use your
       #       custom AI Gateway endpoint name, e.g. `demo-generator-do-not-delete`.
-      anthropic_llm_endpoint: databricks-claude-sonnet-4-8
+      anthropic_llm_endpoint: databricks-claude-sonnet-5
       anthropic_base_path: serving-endpoints/anthropic
       ai_gateway: databricks-claude-opus-4-7
       ai_gateway_mini: databricks-gpt-5-4-mini
       ai_gateway_embedding: databricks-qwen3-embedding-0-6b
-      # Unity Catalog every new project lands in. Created at app boot if
-      # missing; USE CATALOG + CREATE SCHEMA granted to `account users`,
+      # Unity Catalog every new project lands in. Must already exist — the
+      # app only VALIDATES it at boot (core/_catalog_bootstrap.py) and
+      # crashes with copy-paste CREATE/GRANT statements if it's missing or
+      # under-granted; it does NOT create the catalog itself. Needs
+      # USE CATALOG + CREATE SCHEMA granted to `account users`, and
       # ALL PRIVILEGES granted to each admin in template_admin_emails.
       default_catalog: ai_demo_gen
 

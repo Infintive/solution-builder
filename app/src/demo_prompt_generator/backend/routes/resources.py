@@ -345,6 +345,14 @@ def pick_query_warehouse(ws) -> tuple[str | None, str | None]:
 # unlike warehouse queries). Traverse-check granularity: catalogs/schemas gate on
 # USE, tables gate on SELECT. Fail closed per item: anything we can't confirm is
 # dropped; a wholesale failure falls back to the unfiltered list (see callers).
+#
+# NOTE: on SOME Apps deployments, the OBO token lacks the `unity-catalog` scope
+# effective-permissions needs (Apps' user_api_scopes only accepts the granular
+# `catalog.*` family, which has no equivalent for grants/effective-permissions —
+# a platform gap, not fixable from this app's config). That 403 is systemic
+# (every item fails identically), so `_effective_privileges` raises
+# `_EffectivePermissionsUnavailable` instead of fail-closing item-by-item —
+# see that class's docstring for why the distinction matters.
 # ---------------------------------------------------------------------------
 
 _SELECTABLE_WORKERS = 16
@@ -353,18 +361,36 @@ _SCHEMA_KEEP = {"USE_SCHEMA", "ALL_PRIVILEGES"}
 _TABLE_KEEP = {"SELECT", "ALL_PRIVILEGES"}
 
 
+class _EffectivePermissionsUnavailable(Exception):
+    """Raised when the effective-permissions API itself is unreachable for
+    EVERY item (e.g. this Apps deployment's OBO token lacks the `unity-catalog`
+    scope — Apps' user_api_scopes only grants the granular `catalog.*` family,
+    which doesn't cover grants/effective-permissions) — as opposed to a
+    genuine per-item access denial. `_accessible` lets this propagate so the
+    caller's wholesale-failure handler falls back to the unfiltered list,
+    instead of every item being individually (and silently) fail-closed."""
+
+
+_SCOPE_ERROR_MARKERS = ("invalid scope", "required scopes")
+
+
 def _effective_privileges(
     user_ws: WorkspaceClient, securable_type: str, full_name: str, principal: str
 ) -> set[str]:
     """Privilege names `principal` EFFECTIVELY holds on a securable — includes
     inherited (catalog→schema→table) + group grants, resolved server-side.
-    Empty set on ANY error → caller treats the object as inaccessible (fail-closed).
+    Empty set on ANY per-item error → caller treats the object as inaccessible
+    (fail-closed). A missing-OAuth-scope error is systemic, not per-item, so it
+    raises `_EffectivePermissionsUnavailable` instead — see that class's docstring.
     Mirrors `core/_catalog_bootstrap._principal_privileges`, but effective."""
     try:
         resp = user_ws.grants.get_effective(
             securable_type=securable_type, full_name=full_name, principal=principal
         )
     except Exception as e:
+        msg = str(e).lower()
+        if any(marker in msg for marker in _SCOPE_ERROR_MARKERS):
+            raise _EffectivePermissionsUnavailable(str(e)) from e
         logger.warning(
             f"get_effective failed for {securable_type} {full_name!r} "
             f"({principal!r}): {e}"

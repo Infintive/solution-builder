@@ -256,10 +256,10 @@ WHL_TMPDIR=$(mktemp -d)
 unzip -q "$WHEEL" -d "$WHL_TMPDIR"
 # Find dist-info directory and patch version in METADATA
 DIST_INFO=$(find "$WHL_TMPDIR" -maxdepth 1 -type d -name "*.dist-info")
-sed -i '' "s/^Version: .*/Version: 0.1.0.dev${BUILD_TS}/" "$DIST_INFO/METADATA"
+perl -i -pe "s/^Version: .*/Version: 0.1.0.dev${BUILD_TS}/" "$DIST_INFO/METADATA"
 # Clear hash for modified METADATA in RECORD
 METADATA_REL=$(basename "$DIST_INFO")/METADATA
-sed -i '' "s|${METADATA_REL},sha256=[^,]*,[0-9]*|${METADATA_REL},,|" "$DIST_INFO/RECORD"
+perl -i -pe "s|\Q${METADATA_REL}\E,sha256=[^,]*,[0-9]*|${METADATA_REL},,|" "$DIST_INFO/RECORD"
 # Rename dist-info to match new version
 NEW_DIST_INFO="$WHL_TMPDIR/demo_prompt_generator-0.1.0.dev${BUILD_TS}.dist-info"
 mv "$DIST_INFO" "$NEW_DIST_INFO"
@@ -306,7 +306,10 @@ EOF
 # The .cloud proxy mirrors public PyPI's /simple/ + /packages/<hash>/ paths 1:1
 # (verified), so the URL rewrite below keeps hashes valid.
 cp "$WHEEL" "dist/uv-stage/"
-(cd dist/uv-stage && UV_INDEX_URL="https://pypi-proxy.cloud.databricks.com/simple/" \
+# Overridable for off-network builds (e.g. a laptop without VPN access to the
+# proxy) via UV_LOCK_INDEX_URL=https://pypi.org/simple/ ./scripts/build.sh —
+# default stays the internal proxy since it's the faster path on-network.
+(cd dist/uv-stage && UV_INDEX_URL="${UV_LOCK_INDEX_URL:-https://pypi-proxy.cloud.databricks.com/simple/}" \
     uv lock --quiet --no-config)
 
 # Rewrite the internal PyPI proxy out of the lock when deploying to a workspace

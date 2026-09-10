@@ -25,6 +25,7 @@ node_modules/
 package.json
 package-lock.json
 bun.lockb
+*.bak
 
 # …but the demo-generator's app_template/ ships package.json + lockfile
 # as part of the template — those files are content, not noise.
@@ -79,3 +80,7 @@ initial_templates/**/.env
 initial_templates/**/.env.*
 initial_templates/**/.DS_Store
 initial_templates/**/.venv/
+
+# YAML Configuration files
+app/databricks.prod.yml
+app/databricks.staging.yml
