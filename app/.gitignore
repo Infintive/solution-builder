@@ -23,6 +23,7 @@ src/demo_prompt_generator/_metadata.py
 src/demo_prompt_generator/.claude/
 src/demo_prompt_generator/initial_templates/
 src/demo_prompt_generator/databricks_agent_skill/
+src/demo_prompt_generator/infinitive_ai_standards/
 
 # build files
 dist
@@ -71,6 +72,9 @@ projects/
 
 # Cloned ai-dev-kit repository
 databricks_agent_skill/
+
+# Cloned infinitive-ai-standards repository (second external skills source)
+infinitive_ai_standards/
 
 # Electron build artifacts
 dist-electron/

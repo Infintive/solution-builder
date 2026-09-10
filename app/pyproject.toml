@@ -96,10 +96,11 @@ version = "{version}"
 path = "hatch_build.py"
 
 [tool.hatch.build]
-# Two runtime trees are staged INTO the package by scripts/build.sh before
+# Three runtime trees are staged INTO the package by scripts/build.sh before
 # `uv build`, so paths inside the wheel mirror the dev tree exactly:
 #   src/demo_prompt_generator/.claude/skills/databricks-solution-builder/
 #   src/demo_prompt_generator/databricks_agent_skill/
+#   src/demo_prompt_generator/infinitive_ai_standards/
 # Backend resolvers use one Path expression for both modes (editable dev
 # walks up to the repo; wheel install reads from the package).
 # `.claude/` needs explicit listing here — hatch otherwise skips dotfile dirs.
@@ -112,5 +113,6 @@ artifacts = [
     "src/demo_prompt_generator/_metadata.py",
     "src/demo_prompt_generator/.claude",
     "src/demo_prompt_generator/databricks_agent_skill",
+    "src/demo_prompt_generator/infinitive_ai_standards",
 ]
 exclude = ["src/demo_prompt_generator/ui"]

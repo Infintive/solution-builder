@@ -22,10 +22,12 @@
 #   --rebuild-backend           Force rebuild the PyInstaller backend
 #   --clean                     Remove all build artifacts and start fresh
 #   --ai-dev-kit-branch BRANCH  Clone/checkout a specific databricks-agent-skills branch (default: main). Alias: --das-branch
+#   --infinitive-branch BRANCH  Clone/checkout a specific infinitive-ai-standards branch (default: main)
 #   --lakebase-url URL          Embed Lakebase PostgreSQL connection URL
 #
 # Environment variables:
 #   DATABRICKS_AGENT_SKILL_BRANCH           Same as --das-branch / --ai-dev-kit-branch
+#   INFINITIVE_AI_STANDARDS_BRANCH          Same as --infinitive-branch
 #   LAKEBASE_PG_URL             Same as --lakebase-url
 #
 # Requirements:
@@ -61,6 +63,8 @@ REBUILD_BACKEND=false
 CLEAN=false
 # Databricks Agent Skills (DAS) branch — pure skills, no Python packages.
 DAS_BRANCH="${DAS_BRANCH:-${DATABRICKS_AGENT_SKILL_BRANCH:-main}}"
+# Infinitive AI Standards branch — second external skills source.
+INFINITIVE_BRANCH="${INFINITIVE_BRANCH:-${INFINITIVE_AI_STANDARDS_BRANCH:-main}}"
 LAKEBASE_URL="${LAKEBASE_PG_URL:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -93,13 +97,17 @@ while [[ $# -gt 0 ]]; do
             DATABRICKS_AGENT_SKILL_BRANCH="$2"
             shift 2
             ;;
+        --infinitive-branch)
+            INFINITIVE_BRANCH="$2"
+            shift 2
+            ;;
         --lakebase-url)
             LAKEBASE_URL="$2"
             shift 2
             ;;
         *)
             echo -e "${RED}Unknown option: $1${NC}"
-            echo "Usage: $0 [--arch arm64|x64] [--skip-python] [--skip-frontend] [--rebuild-frontend] [--rebuild-backend] [--clean] [--ai-dev-kit-branch BRANCH] [--lakebase-url URL]"
+            echo "Usage: $0 [--arch arm64|x64] [--skip-python] [--skip-frontend] [--rebuild-frontend] [--rebuild-backend] [--clean] [--ai-dev-kit-branch BRANCH] [--infinitive-branch BRANCH] [--lakebase-url URL]"
             exit 1
             ;;
     esac
@@ -157,6 +165,47 @@ else
             git reset --hard "origin/$DAS_BRANCH" && \
             git clean -fdx) && \
         echo -e "${GREEN}databricks-agent-skills updated${NC}" || echo -e "${YELLOW}databricks-agent-skills update failed${NC}"
+    fi
+fi
+
+# ==============================================================================
+# Clone the Infinitive AI Standards repo if not present (second external
+# skills source; skills/* + instructions/ are used, kept as
+# infinitive_ai_standards/). PRIVATE repo (unlike DAS above) — needs
+# INFINITIVE_GITHUB_TOKEN. See CLAUDE.md's "Infinitive AI Standards" section.
+# ==============================================================================
+INFINITIVE_REPO="https://github.com/Infintive/infinitive-ai-standards.git"
+INFINITIVE_GIT_AUTH=()
+if [ -n "${INFINITIVE_GITHUB_TOKEN:-}" ]; then
+    INFINITIVE_GIT_AUTH=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$INFINITIVE_GITHUB_TOKEN" | base64 | tr -d '\n')")
+fi
+
+if [ ! -d "$APP_DIR/infinitive_ai_standards" ]; then
+    echo -e "${CYAN}Cloning infinitive-ai-standards (branch: $INFINITIVE_BRANCH)...${NC}"
+    git "${INFINITIVE_GIT_AUTH[@]}" clone --branch "$INFINITIVE_BRANCH" "$INFINITIVE_REPO" "$APP_DIR/infinitive_ai_standards"
+    echo -e "${GREEN}infinitive-ai-standards cloned successfully${NC}"
+elif [ ! -d "$APP_DIR/infinitive_ai_standards/skills" ] || [ "$(cd "$APP_DIR/infinitive_ai_standards" && git remote get-url origin 2>/dev/null)" != "$INFINITIVE_REPO" ]; then
+    echo -e "${YELLOW}infinitive_ai_standards folder is stale/wrong-remote, re-cloning...${NC}"
+    rm -rf "$APP_DIR/infinitive_ai_standards"
+    git "${INFINITIVE_GIT_AUTH[@]}" clone --branch "$INFINITIVE_BRANCH" "$INFINITIVE_REPO" "$APP_DIR/infinitive_ai_standards"
+    echo -e "${GREEN}infinitive-ai-standards cloned successfully${NC}"
+else
+    CURRENT_BRANCH=$(cd "$APP_DIR/infinitive_ai_standards" && git branch --show-current)
+    if [ "$CURRENT_BRANCH" != "$INFINITIVE_BRANCH" ]; then
+        echo -e "${YELLOW}Switching infinitive-ai-standards to branch: $INFINITIVE_BRANCH (full reset)${NC}"
+        (cd "$APP_DIR/infinitive_ai_standards" && \
+            git "${INFINITIVE_GIT_AUTH[@]}" fetch origin && \
+            git checkout "$INFINITIVE_BRANCH" && \
+            git reset --hard "origin/$INFINITIVE_BRANCH" && \
+            git clean -fdx)
+        echo -e "${GREEN}infinitive-ai-standards switched and reset${NC}"
+    else
+        echo -e "${CYAN}Updating infinitive-ai-standards (branch: $INFINITIVE_BRANCH)...${NC}"
+        (cd "$APP_DIR/infinitive_ai_standards" && \
+            git "${INFINITIVE_GIT_AUTH[@]}" fetch origin && \
+            git reset --hard "origin/$INFINITIVE_BRANCH" && \
+            git clean -fdx) && \
+        echo -e "${GREEN}infinitive-ai-standards updated${NC}" || echo -e "${YELLOW}infinitive-ai-standards update failed${NC}"
     fi
 fi
 

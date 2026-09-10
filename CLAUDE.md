@@ -17,6 +17,12 @@ A **system that generates Databricks demos**. Not one app — **three**, plus a 
 
 Plus: **Databricks Agent Skills (DAS)** — cloned into `app/databricks_agent_skill/` (dir name kept for path stability) from `github.com/databricks/databricks-agent-skills`, holding ~28 per-resource skills for creating individual Databricks resources (pipelines, dashboards, Genie spaces, KAs, MAS, etc.). Skills live under `skills/*` + `experimental/databricks-genie`; the generator's agent uses these during the Build stage. (Migrated from the retired `databricks-solutions/ai-dev-kit`.)
 
+Plus: **Infinitive AI Standards** — a second, unrelated external skills source, cloned into `app/infinitive_ai_standards/` from `github.com/Infintive/infinitive-ai-standards` (branch `main`). Holds general (non-Databricks) engineering-discipline skills under `skills/*` (`codebase-state`, `refactor`) — wired into `skills_manager.py` exactly like DAS (own resolver/enumerator, same clone/track-upstream/copy pattern, gitignored). Its `instructions/` tree (tooling-agnostic coding-standards markdown for Python/SQL/Databricks + client overrides — no `SKILL.md`, not Claude-Code-skill-shaped) is copied too, wrapped as ONE synthetic skill `infinitive-coding-standards` with a generated `SKILL.md` (`_copy_infinitive_instructions`) so it's still discoverable via the Skill tool. `templates/`/`scripts/`/`README.md` in that repo are ignored. Every generated demo's agent gets all of it.
+
+**Discoverable vs. directed.** `agent.py` passes `skills="all"` to the SDK, so every skill under a project's `.claude/skills/` (DAS, `databricks-solution-builder`, `databricks-architecture`, and all of Infinitive's) is equally *discoverable* — listed in the agent's system prompt, invocable at the model's own judgment. But only some are *directed*: `stages/03.1-build.md`'s "Behavior rules" section explicitly instructs the Build-stage agent to read `SKILLS/infinitive-coding-standards/SKILL.md` (client overrides first, then the matching language index) before writing Python/SQL/Databricks code — the same explicit-instruction pattern Step 2 of "How to build" already used for DAS ("read the matching DAS skill for the HOW"). `codebase-state` and `refactor` are NOT similarly directed (their descriptions target onboarding onto an existing codebase / a refactor engagement, not building a new demo from scratch) — they stay discoverable-only. `03.1r-build-on-real.md` (the grounded/read-only Build fork) inherits `03.1-build.md`'s Behavior rules wholesale, so this applies to both Build flows from one edit.
+
+**⚠️ Unlike DAS, this repo is PRIVATE — cloning it needs `INFINITIVE_GITHUB_TOKEN`.** A plain unauthenticated `git clone` 401s (verified directly against the git HTTP endpoint — DAS's equivalent request returns 200, this one returns 401). All three call sites (`dev.sh`, `build.sh`, `build-electron.sh`) read a read-only PAT from `INFINITIVE_GITHUB_TOKEN` (`.env` for `dev.sh`; the shell environment for `build.sh`/`build-electron.sh`, since those don't source `.env`) and pass it as a one-shot `git -c http.https://github.com/.extraheader="AUTHORIZATION: basic <base64 x-access-token:$TOKEN>"` on every `clone`/`fetch` — **never embedded in the remote URL**, so it's never persisted into `infinitive_ai_standards/.git/config` and the existing remote-mismatch re-clone check (which compares against the plain URL) needed no changes. Mint a fine-grained PAT scoped to just that repo (`Contents: Read-only`). Without the token AND without a pre-existing local `infinitive_ai_standards/` clone to reuse (the fast path in `build.sh`), the deploy build fails fast with an explicit error instead of a cryptic 401. **Practical implication for `databricks bundle deploy`:** `build.sh` runs on whoever's machine issues that command, not inside the deployed container (nothing clones at container runtime — frozen into the wheel at build time) — so that token needs to be in *that* machine's environment, not the Databricks workspace.
+
 ## Mental model
 
 ```
@@ -73,6 +79,9 @@ industry-demo-prompts/
 │   ├── databricks_agent_skill/                       # Cloned databricks-agent-skills repo (dir name kept; not a submodule)
 │   │   ├── skills/                       # ~28 per-resource skills (GA)
 │   │   └── experimental/databricks-genie/#   the one experimental skill we ship
+│   ├── infinitive_ai_standards/           # Cloned infinitive-ai-standards repo (second external skills source; gitignored, not a submodule)
+│   │   ├── skills/                       # codebase-state, refactor
+│   │   └── instructions/                 # coding-standards markdown; wrapped as the synthetic infinitive-coding-standards skill (templates/, scripts/ NOT copied)
 │   ├── databricks.yml                    # DAB config for the generator itself
 │   ├── databricks.{prod,staging}.yml     # Deployment overlays (admin emails live here)
 │   ├── pyproject.toml                    # uv. claude-agent-sdk>=0.2.83
@@ -603,7 +612,7 @@ The pre-built **official** templates seeded into the DB on startup (so a fresh w
 All from `app/`:
 
 ```bash
-./scripts/dev.sh              # uvicorn:8000 + vite:5173 + auto-clone databricks_agent_skill
+./scripts/dev.sh              # uvicorn:8000 + vite:5173 + auto-clone databricks_agent_skill + infinitive_ai_standards
 npx tsc --noEmit              # Frontend types
 uv run mypy src               # Backend types
 bun run build                 # Frontend → src/demo_prompt_generator/ui/__dist__/
