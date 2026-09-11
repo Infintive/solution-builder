@@ -2,7 +2,8 @@
 Skills manager for managing skills in projects.
 
 Workflow:
-1. On app startup: Databricks Agent Skills (DAS) is cloned/updated by dev.sh or build-electron.sh
+1. On app startup: Databricks Agent Skills (DAS) + Infinitive AI Standards are
+   cloned/updated by dev.sh, build.sh, or build-electron.sh
 2. On project creation: Copy solution-builder + default skills to .claude/skills/
 3. Skills folder is IGNORED from watchdog sync (managed here only)
 """
@@ -37,6 +38,26 @@ def _resolve_databricks_agent_skill_local() -> str:
     return "./databricks_agent_skill"
 
 DATABRICKS_AGENT_SKILL_LOCAL = _resolve_databricks_agent_skill_local()
+
+# The Infinitive AI Standards repo (github.com/Infintive/infinitive-ai-standards)
+# is a second external skills source, cloned into `infinitive_ai_standards/` by:
+#   - dev.sh (clones into ./infinitive_ai_standards/ for editable dev)
+#   - scripts/build.sh (clones into the wheel under
+#     demo_prompt_generator/infinitive_ai_standards/, pruned to skills/)
+# Resolution order mirrors DAS above: explicit INFINITIVE_AI_STANDARDS_PATH env
+# var, wheel-bundled path inside the installed package, then
+# ./infinitive_ai_standards/ relative to cwd (dev.sh setup).
+def _resolve_infinitive_ai_standards_local() -> str:
+    explicit = os.getenv("INFINITIVE_AI_STANDARDS_PATH")
+    if explicit:
+        return explicit
+    bundled = Path(__file__).parent.parent.parent / "infinitive_ai_standards"
+    if bundled.exists():
+        return str(bundled)
+    return "./infinitive_ai_standards"
+
+INFINITIVE_AI_STANDARDS_LOCAL = _resolve_infinitive_ai_standards_local()
+
 PROJECTS_BASE_DIR = os.getenv("PROJECTS_BASE_DIR", "./projects")
 
 # Skill dirs from the DAS repo that we never copy into a project.
@@ -79,14 +100,27 @@ def _iter_source_skill_dirs() -> list[Path]:
     return [d for d in dirs if d.name not in EXCLUDE_SKILLS]
 
 
+def _iter_infinitive_skill_dirs() -> list[Path]:
+    """Every skill directory the Infinitive AI Standards repo exposes, from its
+    single `skills/*` root (e.g. codebase-state, refactor). `instructions/` and
+    `templates/` in that repo are NOT skills and are never copied. Callers still
+    check for a SKILL.md. Missing root is skipped silently."""
+    root = Path(INFINITIVE_AI_STANDARDS_LOCAL)
+    skills_dir = root / "skills"
+    if not skills_dir.exists():
+        return []
+    return sorted(p for p in skills_dir.iterdir() if p.is_dir())
+
+
 def get_available_skills() -> list[dict]:
     """
-    Get list of available skills from the Databricks Agent Skills (DAS) repo.
+    Get list of available skills from the external skill sources: Databricks
+    Agent Skills (DAS) + Infinitive AI Standards.
 
     Returns:
         List of {name, description, path, dir_name} dicts
     """
-    source_dirs = _iter_source_skill_dirs()
+    source_dirs = _iter_source_skill_dirs() + _iter_infinitive_skill_dirs()
     if not source_dirs:
         logger.warning("Skills directory not found")
         return []
@@ -274,9 +308,70 @@ def _localize_arch_skill_for_app(skill_md: Path) -> None:
         pass
 
 
+# Infinitive AI Standards' `instructions/` tree is tooling-agnostic markdown
+# (no SKILL.md — it's written to be dropped into any AI tool, not Claude-Code-
+# skill-shaped). Claude Code only discovers `.claude/skills/<name>/SKILL.md`,
+# so to make these reachable by the agent we wrap them in ONE synthetic skill:
+# a generated SKILL.md + the instruction files copied verbatim underneath.
+_INFINITIVE_INSTRUCTIONS_SKILL_MD = """---
+name: infinitive-coding-standards
+description: Infinitive's coding standards and best-practice guidelines for Python, SQL, and Databricks (setup, style, design, testing, security, observability, debugging), plus client-specific overrides. Read the relevant index file before writing or reviewing code in that language, and consult it any time a coding-standards question comes up.
+---
+
+# Infinitive Coding Standards
+
+Tooling-agnostic markdown reference pulled verbatim from
+`instructions/` in github.com/Infintive/infinitive-ai-standards (synced by this
+project's skill-copy step, not hand-maintained here).
+
+Each top-level file is an index into a topic subdirectory — read the index
+first, then the specific topic file(s) it points to:
+
+- `client_instructions.md` — client-specific overrides. **These take priority
+  over every other instruction file here when they conflict.**
+- `python_instructions.md` → `python/` (setup, style, design, observability,
+  testing, security, debugging)
+- `sql_instructions.md` → `sql/` (style, querying, schema, performance)
+- `databricks_instructions.md` → `databricks/` (workspace, compute, data,
+  security, mlflow, observability, testing)
+"""
+
+
+def _copy_infinitive_instructions(skills_dest: Path) -> bool:
+    """Copy Infinitive AI Standards' `instructions/` tree into the project as
+    the synthetic `infinitive-coding-standards` skill (see
+    `_INFINITIVE_INSTRUCTIONS_SKILL_MD` above). Returns True if anything was
+    copied (source dir missing/empty => False, no-op)."""
+    src = Path(INFINITIVE_AI_STANDARDS_LOCAL) / "instructions"
+    if not src.is_dir():
+        return False
+
+    dest = skills_dest / "infinitive-coding-standards"
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+
+    copied_any = False
+    for item in src.iterdir():
+        if item.is_dir():
+            shutil.copytree(item, dest / item.name, ignore=_SKILL_COPY_IGNORE)
+        else:
+            shutil.copy2(item, dest / item.name)
+        copied_any = True
+
+    if not copied_any:
+        shutil.rmtree(dest)
+        return False
+
+    (dest / "SKILL.md").write_text(_INFINITIVE_INSTRUCTIONS_SKILL_MD, encoding="utf-8")
+    return True
+
+
 def copy_skills_to_project(project_id: str) -> bool:
-    """Copy the solution-builder skill + every non-excluded Databricks Agent Skills (DAS) skill
-    into the project's `.claude/skills/` directory.
+    """Copy the solution-builder skill + every non-excluded Databricks Agent Skills (DAS)
+    skill + every Infinitive AI Standards skill (incl. `instructions/`, wrapped as the
+    synthetic `infinitive-coding-standards` skill) into the project's `.claude/skills/`
+    directory.
 
     Every project gets the full set. Capability-based filtering was tried
     and removed — pruning by exact slug match silently dropped blocks the
@@ -332,6 +427,21 @@ def copy_skills_to_project(project_id: str) -> bool:
         shutil.copytree(src, dest, ignore=_SKILL_COPY_IGNORE)
         copied += 1
 
+    # Copy every skill from the Infinitive AI Standards repo (skills/*).
+    for src in _iter_infinitive_skill_dirs():
+        if not (src / "SKILL.md").exists():
+            continue
+        dest = skills_dest / src.name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest, ignore=_SKILL_COPY_IGNORE)
+        copied += 1
+
+    # Copy Infinitive AI Standards' instructions/ as the synthetic
+    # infinitive-coding-standards skill (see _copy_infinitive_instructions).
+    if _copy_infinitive_instructions(skills_dest):
+        copied += 1
+
     logger.info(f"Copied {copied} skills to project {project_id}")
     return True
 
@@ -353,7 +463,8 @@ def ensure_project_skills(project_id: str) -> bool:
 
 
 def refresh_project_skills(project_id: str) -> bool:
-    """Re-copy all skills from Databricks Agent Skills (DAS) to project."""
+    """Re-copy all skills from Databricks Agent Skills (DAS) + Infinitive AI
+    Standards to project."""
     # Remove old skills (except solution-builder)
     skills_dir = Path(PROJECTS_BASE_DIR) / project_id / ".claude" / "skills"
     if skills_dir.exists():

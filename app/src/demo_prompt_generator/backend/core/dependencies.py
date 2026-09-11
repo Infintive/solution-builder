@@ -18,14 +18,18 @@ class Dependencies:
     Requires the X-Forwarded-Access-Token header.
     Recommended usage: `user_ws: Dependencies.UserClient`
 
-    NOTE: On Databricks Apps, OBO tokens have a limited configurable-scope
-    vocabulary — only `serving.serving-endpoints` (in `user_api_scopes`) plus
-    the auto-added `iam.*` defaults are accepted today. Calls to
-    `serving_endpoints` (LLM/embeddings) and UC/clusters/warehouses listing
-    return 403 with `Invalid scope, required scopes: <name>` from the
-    downstream API. Use `Dependencies.Client` (service principal) for those
-    code paths and reserve `UserClient` for identity-attributed reads
-    (current-user info, etc.)."""
+    NOTE: On Databricks Apps, OBO tokens only carry whatever is declared in
+    the app resource's `user_api_scopes` (databricks.yml) — plus the
+    auto-added `iam.*` defaults. As of this writing that's the `catalog.*`
+    family + `sql` + `genie` + `workspace.workspace` (see the comment above
+    `user_api_scopes` in databricks.yml for the full story and what's still
+    missing, e.g. no documented Jobs API scope). A call that needs a scope
+    not in that list 403s with `Invalid scope, required scopes: <name>` from
+    the downstream API — `routes/resources.py` has a worked example
+    (`_EffectivePermissionsUnavailable`) of failing open on that specific
+    error instead of mistaking it for a real per-item permission denial. LLM/
+    embeddings calls always use `Dependencies.Client` (service principal),
+    never OBO — those aren't gated by user_api_scopes at all."""
 
     Config: TypeAlias = ConfigDependency
     """Application configuration loaded from environment variables.

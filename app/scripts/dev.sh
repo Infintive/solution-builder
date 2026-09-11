@@ -42,11 +42,17 @@ fi
 # Databricks Agent Skills (DAS) — the per-resource skill repo the build stage uses.
 # (Formerly ai-dev-kit; migrated to github.com/databricks/databricks-agent-skills.)
 DAS_BRANCH="${DAS_BRANCH:-${DATABRICKS_AGENT_SKILL_BRANCH:-main}}"
+# Infinitive AI Standards — second external skills repo (github.com/Infintive/infinitive-ai-standards).
+INFINITIVE_BRANCH="${INFINITIVE_BRANCH:-${INFINITIVE_AI_STANDARDS_BRANCH:-main}}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --das-branch|--ai-dev-kit-branch)
             DAS_BRANCH="$2"
+            shift 2
+            ;;
+        --infinitive-branch)
+            INFINITIVE_BRANCH="$2"
             shift 2
             ;;
         *)
@@ -114,6 +120,70 @@ else
                 git reset --hard "origin/$DAS_BRANCH" && \
                 git clean -fdx) && \
             echo -e "${GREEN}databricks-agent-skills updated${NC}" || echo -e "${YELLOW}databricks-agent-skills update failed${NC}"
+        fi
+    fi
+fi
+
+# ============================================================================
+# Clone the Infinitive AI Standards repo (second external skills source, no
+# Python packages). PRIVATE repo (unlike DAS above) — needs INFINITIVE_GITHUB_TOKEN.
+# Cloned into ./infinitive_ai_standards/; skills_manager reads skills/* +
+# wraps instructions/ into a synthetic skill (templates/, scripts/ ignored).
+# ============================================================================
+INFINITIVE_REPO="https://github.com/Infintive/infinitive-ai-standards.git"
+
+# Pre-load INFINITIVE_GITHUB_TOKEN from .env if not already in the environment
+# — the full `source .env` below happens AFTER this clone runs, so a
+# .env-only token wouldn't otherwise be seen yet. Best-effort; a shell-exported
+# token (or none, for a public fork) still works with no .env present.
+if [ -z "${INFINITIVE_GITHUB_TOKEN:-}" ] && [ -f .env ]; then
+    INFINITIVE_GITHUB_TOKEN=$(grep -m1 '^INFINITIVE_GITHUB_TOKEN=' .env | cut -d '=' -f2-)
+fi
+
+# Read-only PAT scoped to just this repo (fine-grained: Contents: Read-only on
+# Infintive/infinitive-ai-standards). Passed as a one-shot `http.extraheader`
+# via `-c` — NEVER embedded in the remote URL, so it's never written to
+# infinitive_ai_standards/.git/config. Only `clone`/`fetch` need it (network
+# ops); checkout/reset/clean are local. See CLAUDE.md's "Infinitive AI
+# Standards" section.
+INFINITIVE_GIT_AUTH=()
+if [ -n "${INFINITIVE_GITHUB_TOKEN:-}" ]; then
+    INFINITIVE_GIT_AUTH=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$INFINITIVE_GITHUB_TOKEN" | base64 | tr -d '\n')")
+fi
+
+if [ ! -d "infinitive_ai_standards" ]; then
+    echo -e "${CYAN}Cloning infinitive-ai-standards (branch: $INFINITIVE_BRANCH)...${NC}"
+    git "${INFINITIVE_GIT_AUTH[@]}" clone --branch "$INFINITIVE_BRANCH" "$INFINITIVE_REPO" infinitive_ai_standards
+    echo -e "${GREEN}infinitive-ai-standards cloned successfully${NC}"
+elif [ ! -d "infinitive_ai_standards/skills" ]; then
+    echo -e "${YELLOW}infinitive_ai_standards folder has wrong structure, re-cloning...${NC}"
+    rm -rf infinitive_ai_standards
+    git "${INFINITIVE_GIT_AUTH[@]}" clone --branch "$INFINITIVE_BRANCH" "$INFINITIVE_REPO" infinitive_ai_standards
+    echo -e "${GREEN}infinitive-ai-standards cloned successfully${NC}"
+else
+    CURRENT_REMOTE=$(cd infinitive_ai_standards && git remote get-url origin 2>/dev/null)
+    if [ "$CURRENT_REMOTE" != "$INFINITIVE_REPO" ]; then
+        echo -e "${YELLOW}infinitive_ai_standards points at a different remote — re-cloning...${NC}"
+        rm -rf infinitive_ai_standards
+        git "${INFINITIVE_GIT_AUTH[@]}" clone --branch "$INFINITIVE_BRANCH" "$INFINITIVE_REPO" infinitive_ai_standards
+        echo -e "${GREEN}infinitive-ai-standards cloned successfully${NC}"
+    else
+        CURRENT_BRANCH=$(cd infinitive_ai_standards && git branch --show-current)
+        if [ "$CURRENT_BRANCH" != "$INFINITIVE_BRANCH" ]; then
+            echo -e "${YELLOW}Switching infinitive-ai-standards to branch: $INFINITIVE_BRANCH (full reset)${NC}"
+            (cd infinitive_ai_standards && \
+                git "${INFINITIVE_GIT_AUTH[@]}" fetch origin && \
+                git checkout "$INFINITIVE_BRANCH" && \
+                git reset --hard "origin/$INFINITIVE_BRANCH" && \
+                git clean -fdx)
+            echo -e "${GREEN}infinitive-ai-standards switched and reset${NC}"
+        else
+            echo -e "${CYAN}Updating infinitive-ai-standards (branch: $INFINITIVE_BRANCH)...${NC}"
+            (cd infinitive_ai_standards && \
+                git "${INFINITIVE_GIT_AUTH[@]}" fetch origin && \
+                git reset --hard "origin/$INFINITIVE_BRANCH" && \
+                git clean -fdx) && \
+            echo -e "${GREEN}infinitive-ai-standards updated${NC}" || echo -e "${YELLOW}infinitive-ai-standards update failed${NC}"
         fi
     fi
 fi

@@ -31,7 +31,7 @@ variables:
   ai_gateway_embedding:
     description: "Embedding endpoint (template search)."
   default_catalog:
-    description: "Unity Catalog every new project lands in. Created at app boot if missing, with USE CATALOG + CREATE SCHEMA granted to `account users` and ALL PRIVILEGES granted to each admin in template_admin_emails."
+    description: "Unity Catalog every new project lands in. Must already exist — the app only VALIDATES it at boot (core/_catalog_bootstrap.py) and crashes with copy-paste CREATE/GRANT statements if it's missing or under-granted; it does NOT create the catalog itself. Needs USE CATALOG + CREATE SCHEMA granted to `account users`, and ALL PRIVILEGES granted to each admin in template_admin_emails."
   deployer_sp_client_id:
     description: "Model-3 ONLY. Deployer-SP OAuth client id. SECRET-ADJACENT: never commit a real value — the default is a placeholder; supply the real id at deploy via `export BUNDLE_VAR_deployer_sp_client_id=...`."
     default: "<set-via-BUNDLE_VAR_deployer_sp_client_id>"
@@ -118,21 +118,37 @@ resources:
       # User Authorization to just the two built-in defaults
       # (iam.access-control:read, iam.current-user:read) and drops these.
       #
-      # The deploy path itself needs NO OBO scope — ALL resource deploys run as
-      # the DEPLOYER SP against the target (subprocess_auth_env target_deploy
-      # branch), and metadata/embeddings LLM calls run as the APP SP. The OBO
-      # scopes below cover the agent's metadata reads (catalog/schema/table
-      # listing) during builds. The Apps user_api_scopes API REJECTS the literal
-      # `unity-catalog` ("not a valid scope") and `catalog`, accepting only the
-      # granular `catalog.*` family — so we request the full granular UC set,
-      # the grantable superset of the connections capability. This workspace
-      # REJECTS `all-apis`/`iam.*`.
-      # GENERIC scopes only — the agent's OBO calls read catalog metadata during
-      # builds in EVERY tier. DAB APPENDS target user_api_scopes to this base list.
+      # The deploy path needs NO OBO scope ONLY in Model-3 (cross-workspace):
+      # there, ALL resource deploys run as the DEPLOYER SP against the target
+      # (subprocess_auth_env target_deploy branch). Without a deployer SP
+      # configured (the common case — e.g. this staging deployment), builds
+      # run "classic OBO": subprocess_auth_env writes the user's own
+      # downscoped x-forwarded-access-token into the project's .databrickscfg,
+      # and EVERY Databricks CLI/SDK call the Build-stage agent makes —
+      # SQL warehouse queries, dashboards, Genie spaces, workspace/notebook
+      # ops, not just catalog/schema/table listing — runs under THESE scopes.
+      # Under-scoping here doesn't just limit metadata reads; it blocks the
+      # entire classic-OBO build past table profiling.
+      #
+      # The Apps user_api_scopes API REJECTS the literal `unity-catalog`
+      # ("not a valid scope") and `catalog`, accepting only the granular
+      # `catalog.*` family — so we request the full granular UC set, the
+      # grantable superset of the connections capability. This workspace
+      # REJECTS `all-apis`/`iam.*`. Confirmed-valid names beyond `catalog.*`
+      # (Databricks Apps auth docs): `sql` (warehouse queries; also covers
+      # AI/BI dashboards — Lakeview runs on SQL under the hood), `genie`,
+      # `workspace.workspace` (notebooks). No documented scope exists yet for
+      # the Jobs API — a DAB path that needs Jobs may still 403 under OBO.
+      # "databricks-connect" is NOT a real scope name (it's a client library,
+      # not a grantable capability) — Spark Connect via serverless compute
+      # rides on `sql` if it works via OBO at all; unconfirmed.
       user_api_scopes:
         - catalog.catalogs
         - catalog.schemas
         - catalog.tables
+        - sql
+        - genie
+        - workspace.workspace
       # NOTE on the Lakebase grant: even with TF 1.15.0, Apps' grant API rejects
       # autoscaling project slugs ("Database instance X does not exist") — it
       # only knows legacy Lakebase Provisioned instances. So no `database`

@@ -93,20 +93,21 @@ for _svg in \
 done
 
 # --- 2. Stage runtime data INTO the package source tree (paths mirror dev) ---
-# The wheel ships .claude/, initial_templates/, and databricks_agent_skill/ INSIDE
-# src/demo_prompt_generator/ so paths inside the installed package match the
-# dev-tree layout exactly — backend resolvers can use one Path expression for
-# both modes (editable install walks up to repo, wheel install reads from the
-# package). Shipping these as loose workspace files crashed the App's source
-# download with a list-files timeout; bundling into the wheel = one big file.
+# The wheel ships .claude/, initial_templates/, databricks_agent_skill/, and
+# infinitive_ai_standards/ INSIDE src/demo_prompt_generator/ so paths inside
+# the installed package match the dev-tree layout exactly — backend resolvers
+# can use one Path expression for both modes (editable install walks up to
+# repo, wheel install reads from the package). Shipping these as loose
+# workspace files crashed the App's source download with a list-files
+# timeout; bundling into the wheel = one big file.
 PKG_DIR="src/demo_prompt_generator"
 echo -e "${BLUE}[2/4] Staging runtime data inside $PKG_DIR/...${NC}"
 # Always clean up after build so dev iteration doesn't accumulate (and so
 # `git status` stays clean even if the build fails partway through).
 # `bin/` is excluded from cleanup so a cached CLI binary survives across
 # back-to-back builds (the version-check below skips re-download when fresh).
-trap 'rm -rf "$PKG_DIR/.claude" "$PKG_DIR/initial_templates" "$PKG_DIR/databricks_agent_skill"' EXIT
-rm -rf "$PKG_DIR/.claude" "$PKG_DIR/initial_templates" "$PKG_DIR/databricks_agent_skill"
+trap 'rm -rf "$PKG_DIR/.claude" "$PKG_DIR/initial_templates" "$PKG_DIR/databricks_agent_skill" "$PKG_DIR/infinitive_ai_standards"' EXIT
+rm -rf "$PKG_DIR/.claude" "$PKG_DIR/initial_templates" "$PKG_DIR/databricks_agent_skill" "$PKG_DIR/infinitive_ai_standards"
 
 # NOTE: We do NOT ship the Databricks CLI inside the wheel — the App's
 # bundle-source export path has a 10 MB per-file cap and the CLI binary
@@ -238,6 +239,51 @@ if [[ ! -d "$PKG_DIR/databricks_agent_skill" ]]; then
     fi
 fi
 
+# infinitive_ai_standards/ — clone the Infinitive AI Standards repo (same
+# branch dev.sh uses), second external skills source, so the deployed app has
+# it without runtime cloning. Frozen with the wheel; redeploy to update.
+# PRIVATE repo (unlike DAS above) — needs INFINITIVE_GITHUB_TOKEN in THIS
+# shell's environment when there's no pre-existing local clone to reuse (the
+# fast path below). See CLAUDE.md's "Infinitive AI Standards" section.
+INFINITIVE_REPO="https://github.com/Infintive/infinitive-ai-standards.git"
+INFINITIVE_BRANCH="${INFINITIVE_BRANCH:-${INFINITIVE_AI_STANDARDS_BRANCH:-main}}"
+INFINITIVE_GIT_AUTH=()
+if [[ -n "${INFINITIVE_GITHUB_TOKEN:-}" ]]; then
+    INFINITIVE_GIT_AUTH=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$INFINITIVE_GITHUB_TOKEN" | base64 | tr -d '\n')")
+fi
+if [[ ! -d "$PKG_DIR/infinitive_ai_standards" ]]; then
+    if [[ -d "infinitive_ai_standards/.git" ]]; then
+        # Fast path: copy the locally cloned repo (already on the right branch
+        # from dev.sh). Avoids a network fetch per build — and needs no token,
+        # since no network call happens here.
+        echo "  Bundling infinitive_ai_standards from local clone (branch $(cd infinitive_ai_standards && git branch --show-current))"
+        rsync -a --exclude='.git' --exclude='node_modules' --exclude='__pycache__' \
+            "infinitive_ai_standards/" "$PKG_DIR/infinitive_ai_standards/"
+    else
+        if [[ -z "${INFINITIVE_GITHUB_TOKEN:-}" ]]; then
+            echo "ERROR: infinitive_ai_standards/ not found locally and INFINITIVE_GITHUB_TOKEN is unset." >&2
+            echo "  Infintive/infinitive-ai-standards is a PRIVATE repo — either export a read-only" >&2
+            echo "  INFINITIVE_GITHUB_TOKEN (fine-grained PAT, Contents: Read-only on that repo)," >&2
+            echo "  or run ./scripts/dev.sh once first (with the token set) to create a local clone" >&2
+            echo "  this build can reuse without hitting the network." >&2
+            exit 1
+        fi
+        echo "  Cloning infinitive-ai-standards ($INFINITIVE_REPO branch $INFINITIVE_BRANCH) into wheel..."
+        git "${INFINITIVE_GIT_AUTH[@]}" clone --depth 1 --branch "$INFINITIVE_BRANCH" "$INFINITIVE_REPO" "$PKG_DIR/infinitive_ai_standards"
+        rm -rf "$PKG_DIR/infinitive_ai_standards/.git"
+    fi
+
+    # Prune to ONLY skills/ + instructions/ (skills_manager reads skills/* for
+    # real skills and wraps instructions/ into the synthetic
+    # infinitive-coding-standards skill — see _copy_infinitive_instructions.
+    # templates/, scripts/, README aren't read by the app and aren't shipped).
+    if [[ -d "$PKG_DIR/infinitive_ai_standards" ]]; then
+        find "$PKG_DIR/infinitive_ai_standards" -mindepth 1 -maxdepth 1 \
+            ! -name "skills" ! -name "instructions" -exec rm -rf {} + 2>/dev/null || true
+        echo "  Pruned infinitive_ai_standards to skills/ + instructions/ (dropped templates/, scripts/, README, etc.)"
+    fi
+fi
+
 # --- Build Python wheel ---
 echo -e "${BLUE}[2/4] Building Python wheel...${NC}"
 rm -f dist/*.whl
@@ -256,10 +302,10 @@ WHL_TMPDIR=$(mktemp -d)
 unzip -q "$WHEEL" -d "$WHL_TMPDIR"
 # Find dist-info directory and patch version in METADATA
 DIST_INFO=$(find "$WHL_TMPDIR" -maxdepth 1 -type d -name "*.dist-info")
-sed -i '' "s/^Version: .*/Version: 0.1.0.dev${BUILD_TS}/" "$DIST_INFO/METADATA"
+perl -i -pe "s/^Version: .*/Version: 0.1.0.dev${BUILD_TS}/" "$DIST_INFO/METADATA"
 # Clear hash for modified METADATA in RECORD
 METADATA_REL=$(basename "$DIST_INFO")/METADATA
-sed -i '' "s|${METADATA_REL},sha256=[^,]*,[0-9]*|${METADATA_REL},,|" "$DIST_INFO/RECORD"
+perl -i -pe "s|\Q${METADATA_REL}\E,sha256=[^,]*,[0-9]*|${METADATA_REL},,|" "$DIST_INFO/RECORD"
 # Rename dist-info to match new version
 NEW_DIST_INFO="$WHL_TMPDIR/demo_prompt_generator-0.1.0.dev${BUILD_TS}.dist-info"
 mv "$DIST_INFO" "$NEW_DIST_INFO"
@@ -306,7 +352,21 @@ EOF
 # The .cloud proxy mirrors public PyPI's /simple/ + /packages/<hash>/ paths 1:1
 # (verified), so the URL rewrite below keeps hashes valid.
 cp "$WHEEL" "dist/uv-stage/"
-(cd dist/uv-stage && UV_INDEX_URL="https://pypi-proxy.cloud.databricks.com/simple/" \
+# Default index mirrors REWRITE_LOCK_TO_PUBLIC_PYPI's on/off-network split
+# (set above): any bundle-target build (--target set) already gets its lock
+# rewritten to public PyPI post-hoc, so resolve straight against public PyPI
+# too — a deploy from a machine without VPN access to the internal proxy just
+# works. Local dev builds (no --target) keep resolving against the internal
+# proxy, the faster path on-network. Still overridable either way via
+# UV_LOCK_INDEX_URL=<url> ./scripts/build.sh.
+if [[ -n "${UV_LOCK_INDEX_URL:-}" ]]; then
+    _UV_LOCK_INDEX_URL="$UV_LOCK_INDEX_URL"
+elif [[ -n "$REWRITE_LOCK_TO_PUBLIC_PYPI" ]]; then
+    _UV_LOCK_INDEX_URL="https://pypi.org/simple/"
+else
+    _UV_LOCK_INDEX_URL="https://pypi-proxy.cloud.databricks.com/simple/"
+fi
+(cd dist/uv-stage && UV_INDEX_URL="$_UV_LOCK_INDEX_URL" \
     uv lock --quiet --no-config)
 
 # Rewrite the internal PyPI proxy out of the lock when deploying to a workspace
