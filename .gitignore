@@ -84,3 +84,7 @@ initial_templates/**/.venv/
 # YAML Configuration files
 app/databricks.prod.yml
 app/databricks.staging.yml
+
+# Understand-Anything scratch space
+.ua/tmp/
+.ua/.trash-*/
